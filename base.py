@@ -6,9 +6,9 @@ import PIL
 from PIL import Image
 from torchvision.utils import save_image as save
 import random
-from models_mnist import VAE_Building
 import visdom
 import numpy as np
+from mnist_gan_experiment import GAN_Building
 from torchvision import datasets
 
 ##### Simple classification model
@@ -19,10 +19,10 @@ class DataBuilder(data.Dataset):
 
         if mode == "training":
             self.loader = torch.utils.data.DataLoader(datasets.MNIST('../data', train=True, download=True,transform=transforms.Compose(
-                                                                           [transforms.ToTensor(),transforms.Normalize((0.1307,),(0.3081,))])), batch_size=32, shuffle=True)
+                                                                           [transforms.ToTensor(),transforms.Normalize((0.1307,),(0.3081,))])), batch_size=16, shuffle=True)
         else:
             self.loader = torch.utils.data.DataLoader(datasets.MNIST('../data', train=False, transform=transforms.Compose(
-                [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])), batch_size=32, shuffle=True)
+                [transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])), batch_size=16, shuffle=True)
 
         self.ut = transforms.Compose([transforms.Normalize((-0.1307/0.3081,), (1/0.3081,))])
         self.my_items = []
@@ -58,11 +58,11 @@ class DataBuilder(data.Dataset):
 ######################### Data Building
 
 vis = visdom.Visdom()
-train_loader = DataBuilder(mode="training", split=0.01)
+train_loader = DataBuilder(mode="training", split=0.001)
 test_loader = DataBuilder(mode="testing", split=0.01)
 # Pair Reconstructions in VAE-k
 
-V = VAE_Building(model_choice="MNISTVAE Zodiac", dbs={'train':train_loader, 'test':test_loader}, result_path="/scratch/Jack/research lab/True_Relations/")
+V = GAN_Building(model_choice="GAN Zodiac", dbs={'train':train_loader, 'test':test_loader}, result_path="/scratch/Jack/research lab/True_Relations/")
 V.train()
 
 #### TO-DO
