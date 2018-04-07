@@ -58,8 +58,8 @@ class DataBuilder(data.Dataset):
 ######################### Data Building
 
 vis = visdom.Visdom()
-train_loader = DataBuilder(mode="training", split=0.001)
-test_loader = DataBuilder(mode="testing", split=0.01)
+train_loader = DataBuilder(mode="training", split=0.01)
+test_loader = DataBuilder(mode="testing", split=0.1)
 # Pair Reconstructions in VAE-k
 
 V = GAN_Building(model_choice="GAN Zodiac", dbs={'train':train_loader, 'test':test_loader}, result_path="/scratch/Jack/research lab/True_Relations/")
