@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="2a745974-a726-4b88-8a8e-edde25be0082" name="Torch Maxima" url="http://gpu-bart.eecs.oregonstate.edu">
+        <fileTransfer host="gpu-bart.eecs.oregonstate.edu" port="22" accessType="SFTP">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" />
+          </advancedOptions>
+          <option name="port" value="22" />
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

@@ -2,7 +2,7 @@
 <module type="PYTHON_MODULE" version="4">
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$" />
-    <orderEntry type="jdk" jdkName="TorchMaxima" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Remote Python 3.6.4 (sftp://trigkakd@gpu-bart.eecs.oregonstate.edu:22/scratch/Jack/projects/Environments/torch-maxima/bin/python3.6)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="TestRunnerService">

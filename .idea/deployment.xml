@@ -1,12 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
-  <component name="PublishConfigData" autoUpload="Always" serverName="TorchMaxima-Relations" deleteMissingItems="true" createEmptyFolders="true" traceLevel="DETAILS">
+  <component name="PublishConfigData" autoUpload="Always" serverName="Torch Maxima" deleteMissingItems="true" createEmptyFolders="true" traceLevel="DETAILS">
     <serverData>
-      <paths name="sftp://trigkakd@gpu-bart.eecs.oregonstate.edu:22/scratch/Jack/projects/Environments/torch-maxima/bin/python3.6">
+      <paths name="Copy of project-level server 'Torch Maxima'">
         <serverdata>
           <mappings>
-            <mapping deploy="/projects/TrueRelations" local="$PROJECT_DIR$" />
-            <mapping local="" />
+            <mapping deploy="/scratch/Jack/projects/TrueRelations" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+        </serverdata>
+      </paths>
+      <paths name="Torch Maxima">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/scratch/Jack/projects/TrueRelations" local="$PROJECT_DIR$" web="/" />
           </mappings>
         </serverdata>
       </paths>

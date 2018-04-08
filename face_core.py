@@ -5,7 +5,6 @@ import os.path as path
 import PIL
 from PIL import Image
 import random
-from models import *
 import visdom
 import numpy as np
 from recombined_gan import *

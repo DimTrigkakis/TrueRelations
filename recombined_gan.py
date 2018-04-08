@@ -198,40 +198,6 @@ class RelationPrediction(nn.Module):
         class_distribution_domain = self.full_FC_domain(z_vector_cat)
         return class_distribution, class_distribution_domain
 
-class MnistDiscriminator(nn.Module):
-    def __init__(self, complexity="Complexity A", clusters=3, streams=2):
-
-        super(MnistDiscriminator, self).__init__()
-        self.complexity = complexity
-        self.clusters = clusters
-        self.streams = streams
-        self.discriminate = nn.ModuleList([ResnetFragmentEncoder(inplanes=64, block=BasicBlock, layers=[2, 2, 2, 2]),DiscriminatorFC(self.hidden, self.clusters)])
-        self.fake = False
-
-    def forward(self, datums, stream_outputs, stream_inputs, stream_recombined):
-        #
-        discriminator_predictions = [None for i in range(len(datums))]
-        discriminator_labels = [torch.ones(datums[0].size()[0]).long() for i in range(len(datums))] # real targets are 1s, fake targets are 0s
-
-        discriminator_predictions_recombined = None
-        discriminator_labels_recombined = torch.ones(datums[0].size()[0]).long() # real targets are 1s, fake targets are 0s
-
-        if self.fake:  # Fake samples, 0 targets
-            for stream in range(self.streams):
-                discriminator_cnn = self.discriminate[0](stream_outputs[stream]).view(-1, self.hidden * 1 * 1)
-                discriminator_predictions[stream] = self.discriminate[1](discriminator_cnn)
-                discriminator_labels[stream] = torch.mul(discriminator_labels[stream], 0)
-
-            discriminator_cnn = self.discriminate[0](stream_recombined).view(-1, self.hidden * 1 * 1)
-            discriminator_predictions_recombined = self.discriminate[1](discriminator_cnn)
-            discriminator_labels_recombined = torch.mul(discriminator_labels[stream], 0)
-        else:
-            for stream in range(self.streams):
-                discriminator_cnn = self.discriminate[0](stream_inputs[stream]).view(-1, self.hidden * 1 * 1)
-                discriminator_predictions[stream] = self.discriminate[1](discriminator_cnn)
-
-        return discriminator_predictions, discriminator_labels, discriminator_predictions_recombined, discriminator_labels_recombined
-
 class FaceDiscriminator(nn.Module):
     def __init__(self, complexity="Complexity A", clusters=3, streams=4, channels=3):
 
