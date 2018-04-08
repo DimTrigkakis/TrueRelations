@@ -18,252 +18,116 @@ import torch.utils.data as data
 import os.path as path
 import PIL
 from PIL import Image
+import torch.backends.cudnn as tbc
 
-def conv3x3(in_planes, out_planes, stride=1):
-    """3x3 convolution with padding"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,padding=1, bias=False)
+tbc.benchmark = True
 
-def Rconv3x3(in_planes, out_planes, stride=1):
-    """3x3 convolution with padding"""
-    return nn.ConvTranspose2d(in_planes, out_planes, kernel_size=3, stride=stride,output_padding=stride-1,padding=1, bias=False)
+def weights_init(m):
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        m.weight.data.normal_(0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        m.weight.data.normal_(1.0, 0.02)
+        m.bias.data.fill_(0)
 
-class ReverseBasicBlock(nn.Module):
-    expansion = 1
+class decoder(nn.Module):
+    # initializers
+    def __init__(self, image_size=64, density=64, latent_dim=100, channels=3):
+        super(decoder, self).__init__()
 
-    def __init__(self, inplanes, planes, stride=1, upsample=None):
-        super(ReverseBasicBlock, self).__init__()
-        if stride == 1:
-            self.conv1 = Rconv3x3(planes, planes, stride)
-        else:
-            self.conv1 = Rconv3x3(planes, planes, stride)
+        depth = math.log2(image_size) # image size is 64
+        assert depth == round(depth)
+        assert depth >= 3
+        depth = int(depth)
 
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = Rconv3x3(inplanes, planes)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.upsample = upsample
-        self.stride = stride
+        self.decoder = nn.Sequential()
+        self.decoder.add_module("input convolution(t)", nn.ConvTranspose2d(latent_dim, int(density*2**(depth-3)), 4, 1, 0, bias=False))
+        self.decoder.add_module("input batchnorm", nn.BatchNorm2d(int(density*2**(depth-3))))
+        self.decoder.add_module("input relu", nn.LeakyReLU(0.2, inplace=True))
 
-    def forward(self, x):
-        residual = x
+        for layer in range(depth-3, 0, -1):
+            self.decoder.add_module('decoder conv {0}-{1}'.format(density * 2 ** layer ,density * 2 ** (layer - 1)), nn.ConvTranspose2d(int(density * 2 ** (layer)), int(density * 2 ** (layer - 1)), 4, 2, 1, bias=False))
+            self.decoder.add_module('decoder batchnorm {0}'.format(density * 2 ** (layer - 1)), nn.BatchNorm2d(int(density * 2 ** (layer - 1))))
+            self.decoder.add_module('decoder relu {0}'.format(density * 2 ** (layer - 1)), nn.LeakyReLU(0.2, inplace=True))
 
-        out = self.conv2(x)
-        out = self.bn2(out)
+        self.decoder.add_module('ouput conv', nn.ConvTranspose2d(density, channels, 4, 2, 1, bias=False))
+        self.decoder.add_module('output tanh', nn.Tanh())
 
-        out = self.relu(out)
+        self.apply(weights_init)
 
-        out = self.conv1(out)
-        out = self.bn1(out)
+    # forward method
+    def forward(self, input):
+        output = self.decoder(input)
+        return output
 
-        if self.upsample is not None:
-            residual = self.upsample(x)
-        out += residual
-        out = self.relu(out)
+class encoder(nn.Module):
+    # initializers
+    def __init__(self, image_size=64, density=64, latent_dim=99, latent_group = 33,channels=3):
+        super(encoder, self).__init__()
 
-        return out
+        depth = math.log2(image_size) # image size is 64
+        assert depth == round(depth)
+        assert depth >= 3
+        depth = int(depth)
 
-class BasicBlock(nn.Module):
-    expansion = 1
+        self.latent_dim = latent_dim
+        self.latent_group = latent_group
+        self.clusters = int(self.latent_dim // self.latent_group)
 
-    def __init__(self, inplanes, planes, stride=1, downsample=None):
-        super(BasicBlock, self).__init__()
-        self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = conv3x3(planes, planes)
-        self.bn2 = nn.BatchNorm2d(planes)
-        self.downsample = downsample
-        self.stride = stride
+        self.conv_mean = nn.Conv2d(int(density*2**(depth-3)), latent_dim, 4)
+        self.conv_logvar = nn.Conv2d(int(density*2**(depth-3)), latent_dim, 4)
+        self.encoder = nn.Sequential()
+        self.encoder.add_module("input convolution", nn.Conv2d(channels, density, 4, 2, 1, bias=False))
+        self.encoder.add_module("input relu", nn.LeakyReLU(0.2, inplace=True))
 
-    def forward(self, x):
-        residual = x
+        for layer in range(depth-3):
+            self.encoder.add_module('encoder conv {0}-{1}'.format(density * 2 ** layer ,density * 2 ** (layer + 1)), nn.Conv2d(int(density * 2 ** (layer)), int(density * 2 ** (layer + 1)), 4, 2, 1, bias=False))
+            self.encoder.add_module('encoder batchnorm {0}'.format(density * 2 ** (layer + 1)), nn.BatchNorm2d(int(density * 2 ** (layer + 1))))
+            self.encoder.add_module('encoder relu {0}'.format(density * 2 ** (layer + 1)), nn.LeakyReLU(0.2, inplace=True))
 
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
+        self.apply(weights_init)
 
-        out = self.conv2(out)
-        out = self.bn2(out)
+    # forward method
+    def forward(self, input):
+        output = self.encoder(input)
 
-        if self.downsample is not None:
-            residual = self.downsample(x)
+        mean = self.conv_mean(output)
+        logvar = self.conv_logvar(output)
 
-        out += residual
-        out = self.relu(out)
+        mu_list = [mean[:,0+i*self.latent_group:self.latent_group+i*self.latent_group] for i in range(self.clusters)]
+        logvar_list = [logvar[:,0+i*self.latent_group:self.latent_group+i*self.latent_group] for i in range(self.clusters)]
+        return [mu_list, logvar_list]
 
-        return out
+class discriminator(nn.Module):
+    # initializers
+    def __init__(self, image_size=64, density=64, latent_dim=99, channels=3):
+        super(discriminator, self).__init__()
 
-class ResnetFragmentDecoder(nn.Module):
+        depth = math.log2(image_size) # image size is 64
+        assert depth == round(depth)
+        assert depth >= 3
+        depth = int(depth)
 
-    def __init__(self, inplanes, block, layers, channels):
-        super(ResnetFragmentDecoder, self).__init__()
+        self.discriminator = nn.Sequential()
+        self.discriminator.add_module("input convolution", nn.Conv2d(channels, density, 4, 2, 1, bias=False))
+        self.discriminator.add_module("input relu", nn.LeakyReLU(0.2, inplace=True))
 
-        self.original_inplanes = inplanes
-        self.inplanes = inplanes
-        self.block = block
-        self.layers = layers
-        self.channels = channels
+        for layer in range(depth-3):
+            self.discriminator.add_module('encoder conv {0}-{1}'.format(density * 2 ** layer ,density * 2 ** (layer + 1)), nn.Conv2d(int(density * 2 ** (layer)), int(density * 2 ** (layer + 1)), 4, 2, 1, bias=False))
+            self.discriminator.add_module('encoder batchnorm {0}'.format(density * 2 ** (layer + 1)), nn.BatchNorm2d(int(density * 2 ** (layer + 1))))
+            self.discriminator.add_module('encoder relu {0}'.format(density * 2 ** (layer + 1)), nn.LeakyReLU(0.2, inplace=True))
 
-        self.layer4 = self._make_layer(block, 256, layers[3], stride=2)
-        self.layer3 = self._make_layer(block, 128, layers[2], stride=2)
-        self.layer2 = self._make_layer(block, 64, layers[1], stride=2)
-        self.layer1 = self._make_layer(block, 64, layers[0])
 
-        self.upsample2 = nn.Upsample(scale_factor=2)
-        self.upsample7 = nn.Upsample(scale_factor=7)
-        self.relu = nn.LeakyReLU(inplace=True)
-        self.bn1 = nn.BatchNorm2d(self.channels)
-        self.conv1 = nn.ConvTranspose2d(64, self.channels, kernel_size=7, stride=2, output_padding=1, padding=3,bias=False)
+        self.discriminator.add_module('output-conv', nn.Conv2d(density * 2**(depth-3), 2, 4, 1, 0, bias=False))
+        self.discriminator.add_module('output-sigmoid', nn.Sigmoid())
 
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
+        self.apply(weights_init)
 
-    def _make_layer(self, block, planes, blocks, stride=1): # ALL BATCH NORMS FROM SECOND PLACE NOT FIRST in prev conv
-        upsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            upsample = nn.Sequential(nn.ConvTranspose2d( self.inplanes,planes * block.expansion,kernel_size=1, stride=stride, output_padding=stride-1, bias=False),nn.BatchNorm2d(planes * block.expansion))
-        layers = []
-        layers.append(block(self.inplanes, planes, stride, upsample))
-        for i in range(1, blocks):
-            layers.append(block(planes, planes))
-        self.inplanes = planes * block.expansion
+    # forward method
+    def forward(self, input):
 
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-        x = x.view(-1, self.original_inplanes, 1, 1)
-        x = self.upsample7(x)
-        x = self.layer4(x)
-        x = self.layer3(x)
-        x = self.layer2(x)
-        x = self.layer1(x)
-        x = self.upsample2(x)
-        x = self.conv1(x)
-        x = self.bn1(x)
-
-        return x
-
-class ResnetFragmentEncoder(nn.Module):
-
-    def __init__(self, inplanes, block, layers, channels):
-        super(ResnetFragmentEncoder, self).__init__()
-
-        self.inplanes = inplanes
-        self.block = block
-        self.layers =  layers
-        self.channels = channels
-
-        self.conv1 = nn.Conv2d(self.channels, 64, kernel_size=7, stride=2, padding=3,bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
-        self.relu = nn.LeakyReLU(inplace=True)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
-        self.avgpool = nn.AvgPool2d(7, stride=1)
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
-                m.weight.data.normal_(0, math.sqrt(2. / n))
-            elif isinstance(m, nn.BatchNorm2d):
-                m.weight.data.fill_(1)
-                m.bias.data.zero_()
-
-    def _make_layer(self, block, planes, blocks, stride=1):
-        downsample = None
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * block.expansion,
-                          kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes * block.expansion),
-            )
-        layers = []
-        layers.append(block(self.inplanes, planes, stride, downsample))
-        self.inplanes = planes * block.expansion
-        for i in range(1, blocks):
-            layers.append(block(self.inplanes, planes))
-
-        return nn.Sequential(*layers)
-
-    def forward(self, x):
-
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        x = self.avgpool(x)
-
-        return x
-
-class LinearEncoders(nn.Module):
-    def linearity(self):
-        return nn.Sequential(nn.Linear(self.n, self.h), nn.Linear(self.h, self.h), nn.Linear(self.h, self.z))
-
-    def __init__(self, z, n, c, h=32): # z for latent dimension, n for complexity of fc, c for clusters
-
-        super(LinearEncoders, self).__init__()
-        self.z = z
-        self.n = n
-        self.c = c
-        self.h = h
-        self.fc_mu = nn.ModuleList([self.linearity() for i in range(c)])
-        self.fc_var = nn.ModuleList([self.linearity() for i in range(c)])
-        return
-
-    def forward(self, datum):
-        mu_list = []
-        std_list = []
-
-        for i in range(self.c):
-            mu_list.append(self.fc_mu[i](datum))
-            std_list.append(self.fc_var[i](datum))
-
-        return mu_list, std_list
-
-class LinearDecoders(nn.Module):
-    def linearity(self):
-        return nn.Sequential(nn.Linear(self.z*self.c, self.h), nn.Linear(self.h, self.h), nn.Linear(self.h, self.n))
-
-    def __init__(self, z, n, c, h=32): # z for latent dimension, n for complexity of fc, c for clusters
-        super(LinearDecoders, self).__init__()
-        self.z = z
-        self.n = n
-        self.c = c
-        self.h = h
-        self.dfc = nn.ModuleList([self.linearity()])
-        return
-
-    def forward(self, datum):
-        return self.dfc[0](datum)
-
-class DiscriminatorFC(nn.Module):
-    def linearity(self):
-        return nn.Sequential(nn.Linear(self.n, self.h), nn.Linear(self.h, self.h), nn.Linear(self.h, 2))
-
-    def __init__(self, n, c, h): # z for latent dimension, n for complexity of fc, c for clusters
-
-        super(DiscriminatorFC, self).__init__()
-        self.n = n
-        self.c = c
-        self.h = h
-        self.fc = nn.ModuleList([self.linearity()])
-        return
-
-    def forward(self, datum):
-        return self.fc[0](datum)
+        output = self.discriminator(input)
+        return output.view(-1, 2)
 
 class RelationPrediction(nn.Module):
     def __init__(self, z, c, h, streams, classes=16, domains=5):
@@ -274,14 +138,14 @@ class RelationPrediction(nn.Module):
         self.streams = streams
         self.classes = classes
         self.domains = domains
-        self.full_FC = nn.Sequential(nn.Linear(self.z*self.c*self.streams, self.h), nn.Linear(self.h, self.h), nn.Linear(self.h, self.classes))
-        self.full_FC_domain = nn.Sequential(nn.Linear(self.z*self.c*self.streams, self.h), nn.Linear(self.h, self.h), nn.Linear(self.h, self.domains))
+        self.full_FC = nn.Sequential(nn.Linear(self.z*self.streams, self.h), nn.Linear(self.h, self.h), nn.Linear(self.h, self.classes))
+        self.full_FC_domain = nn.Sequential(nn.Linear(self.z*self.streams, self.h), nn.Linear(self.h, self.h), nn.Linear(self.h, self.domains))
 
     def forward(self, datum):
         z_vectors = []
         for s in range(self.streams):
             z_vectors.append(datum[s])
-        z_vector_cat = torch.cat(z_vectors,1)
+        z_vector_cat = torch.cat(z_vectors,1).squeeze()
         class_distribution = self.full_FC(z_vector_cat)
         class_distribution_domain = self.full_FC_domain(z_vector_cat)
         return class_distribution, class_distribution_domain
@@ -296,8 +160,7 @@ class FaceDiscriminator(nn.Module):
         self.channels = channels
 
         if self.complexity == "Complexity A":
-            self.hidden = 128
-            self.discriminate = nn.ModuleList([ResnetFragmentEncoder(inplanes=64, block=BasicBlock, layers=[2, 2, 2, 2], channels=self.channels),DiscriminatorFC(512, self.clusters, self.hidden)])
+            self.discriminate = discriminator()
 
         self.fake = False
 
@@ -312,23 +175,20 @@ class FaceDiscriminator(nn.Module):
         if self.fake:  # Fake samples, 0 targets
             #  Create 2 fake samples from recombination and 4 from reconstructions
             for stream in range(self.streams):
-                discriminator_cnn = self.discriminate[0](stream_outputs[stream]).view(-1, 512 * 1 * 1)
-                discriminator_predictions[stream] = self.discriminate[1](discriminator_cnn)
+                discriminator_predictions[stream] = self.discriminate(stream_outputs[stream])
                 discriminator_labels[stream] = torch.mul(discriminator_labels[stream], 0)
             for stream in range(self.streams//2):
-                discriminator_cnn = self.discriminate[0](stream_recombined[stream]).view(-1, 512 * 1 * 1)
-                discriminator_predictions_recombined[stream] = self.discriminate[1](discriminator_cnn)
+                discriminator_predictions_recombined[stream] = self.discriminate(stream_recombined[stream])
                 discriminator_labels_recombined[stream] = torch.mul(discriminator_labels[stream], 0)
         else:
             for stream in range(self.streams):
-                discriminator_cnn = self.discriminate[0](stream_inputs[stream]).view(-1, 512 * 1 * 1)
-                discriminator_predictions[stream] = self.discriminate[1](discriminator_cnn)
+                discriminator_predictions[stream] = self.discriminate(stream_inputs[stream])
 
         return discriminator_predictions, discriminator_labels, discriminator_predictions_recombined, discriminator_labels_recombined
 
 class RecombinedGAN(nn.Module):
 
-    def __init__(self, complexity="Complexity A", proper_size=(224,224), channels = 3, hidden=512):
+    def __init__(self, complexity="Complexity A", proper_size=(64,64), channels = 3, hidden=512):
         super(RecombinedGAN, self).__init__()
         self.complexity = complexity
         self.proper_size = proper_size
@@ -343,15 +203,22 @@ class RecombinedGAN(nn.Module):
 
 class FaceVAEMixture(nn.Module):
 
-    def sample_z(self, mu, log_var):
+    def sample_z(self,input):
+
+        mu = input[0]
+        logvar = input[1]
+
+        std = logvar.mul(0.5).exp_()
+        eps  = torch.cuda.FloatTensor(std.size()).normal_()
+        eps = Variable(eps)
 
         # Using reparameterization trick to sample from a gaussian mixture
         if self.inference:
             return mu
-        eps = Variable(torch.randn(mu.size()[0], self.z)).cuda()
-        return mu + torch.exp(log_var / 2) * eps
 
-    def __init__(self, complexity="Complexity A", clusters=3, streams = 4, proper_size=(224,224), channels=3):
+        return eps.mul(std).add_(mu)
+
+    def __init__(self, complexity="Complexity A", clusters=3, streams = 4, proper_size=(64,64), channels=3):
         super(FaceVAEMixture, self).__init__()
         self.inference = False
         self.complexity = complexity
@@ -359,59 +226,65 @@ class FaceVAEMixture(nn.Module):
         self.streams = streams
         self.channels = channels
         self.proper_size = proper_size
+        self.log_string = None
 
         self.sigmoid_in = nn.Sigmoid()
         self.sigmoid_out = nn.Sigmoid()
         self.tanh_in = nn.Tanh()
 
         if self.complexity == "Complexity A":
-            self.z = 8
+            self.z = 99
+            assert self.z % self.clusters == 0
             self.hidden = 128
-            self.encoder = nn.ModuleList([ResnetFragmentEncoder(inplanes=64, block=BasicBlock, layers=[2,2,2,2], channels=self.channels)])
-            self.encoder_fc = nn.ModuleList([LinearEncoders(self.z, 512, self.clusters, self.hidden)])
-            self.decoder_fc = nn.ModuleList([LinearDecoders(self.z, 512, self.clusters, self.hidden)])
-            self.decoder = nn.ModuleList([ResnetFragmentDecoder(inplanes=512, block=ReverseBasicBlock, layers=[2,2,2,2], channels=self.channels)])
-            self.classify = nn.ModuleList([RelationPrediction(self.z, self.clusters, self.hidden, self.streams//2, classes=16, domains=5)])
+            self.encoder = encoder(image_size=self.proper_size[0], density=64, latent_dim=self.z, latent_group = int(self.z//self.clusters), channels=self.channels)
+            self.decoder = decoder(image_size=self.proper_size[0], density=64, latent_dim=self.z, channels=self.channels)
+            self.classify = RelationPrediction(self.z, self.clusters, self.hidden, self.streams//2, classes=16, domains=5)
 
         self.tanh_out = nn.Tanh()
         #self.upsample = nn.Upsample(scale_factor=8)
 
-    def forward(self, datums):
-        # Proper input for face is 3 x 224 x 224
+    def log(self, s):
+        if self.log_string is None:
+            self.log_string = '\n'
+        self.log_string += s
+        self.log_string += '\n'
 
-        stream_inputs = [None for i in range(len(datums))]
+    def terminate(self):
+        print(self.log_string)
+        exit()
+
+    def forward(self, datums):
+
+        stream_inputs_tanh = [self.tanh_in(stream) for stream in datums]
         stream_h_cat = [None for i in range(len(datums))]
         stream_outputs = [None for i in range(len(datums))]
-        stream_recons = [None for i in range(len(datums))]
+        stream_outputs_tanh = [None for i in range(len(datums))]
 
         mu_lists = [[] for i in range(len(datums))]
         std_lists = [[] for i in range(len(datums))]
         z_sample_lists = [[] for i in range(len(datums))]
 
-        for stream_idx, stream in enumerate(datums):
-            #stream = self.upsample(stream)
-            stream_in = self.tanh_in(stream)
-            stream_inputs[stream_idx] = stream_in
-            stream_h = self.encoder[0](stream_in)
+        for stream_idx in range(len(datums)):
+            stream_tanh = stream_inputs_tanh[stream_idx]
+            mu_list, std_list = self.encoder(stream_tanh)
 
-            stream_h = stream_h.view(-1,512*1*1)
-            mu_list, std_list = self.encoder_fc[0](stream_h)
             mu_lists[stream_idx] = mu_list # list of clusters containing mu vectors
             std_lists[stream_idx] = std_list
             z_sample_list = []
 
             for i in range(self.clusters):
-                z_sample_list.append(self.sample_z(mu_list[i], std_list[i]))
+                z_sample_list.append(self.sample_z([mu_list[i], std_list[i]]))
             z_sample_lists[stream_idx] = z_sample_list
+
+            # Each z sample for a particular stream is a list of vectors of size B x group z dimension x 1 x 1
+
             # z_sample_list are the separate samples of z for the different clustering VAEs
             # combine them together, to form stream_h_cat which reconstructs a single image
             stream_h_cat[stream_idx] = torch.cat(z_sample_lists[stream_idx],1)
-            stream_h_list = self.decoder_fc[0](stream_h_cat[stream_idx])
-            stream_out = self.decoder[0](stream_h_list)
 
-            stream_recons[stream_idx] = stream_out
-            stream_ts = self.tanh_out(stream_out)
-            stream_outputs[stream_idx]= stream_ts
+            stream_outputs[stream_idx] = self.decoder(stream_h_cat[stream_idx])
+            stream_ts = self.tanh_out(stream_outputs[stream_idx])
+            stream_outputs_tanh[stream_idx]= stream_ts
 
         # Create a recombined sample for each pair in the batch (assume pair of 2 streams)
         z_pair_A = z_sample_lists[0]
@@ -420,7 +293,8 @@ class FaceVAEMixture(nn.Module):
         z_pair_random_B = z_sample_lists[3]
 
         random_cluster = random.randint(0,self.clusters)
-        z_Recombined = [Variable(torch.zeros(self.z)).cuda() for k in range(self.clusters)]
+        z_Recombined = [Variable(torch.zeros(self.z//self.clusters, 1, 1)).cuda() for k in range(self.clusters)]
+
         for c in range(self.clusters):
             if random_cluster == c:
                 z_Recombined[c] = torch.add(z_Recombined[c], z_pair_A[c])
@@ -430,12 +304,11 @@ class FaceVAEMixture(nn.Module):
         rec = [] # Recombined list of streams of pairs
 
         r = torch.cat(z_Recombined, 1)
-        r = self.decoder_fc[0](r)
-        r = self.decoder[0](r)
+        r = self.decoder(r)
         rec.append(self.tanh_out(r))
 
         random_cluster = random.randint(0, self.clusters)
-        z_Recombined2 = [Variable(torch.zeros(self.z)).cuda() for k in range(self.clusters)]
+        z_Recombined2 = [Variable(torch.zeros(self.z//self.clusters, 1, 1)).cuda() for k in range(self.clusters)]
         for c in range(self.clusters):
             if random_cluster == c:
                 z_Recombined2[c] = torch.add(z_Recombined2[c], z_pair_B[c])
@@ -443,20 +316,18 @@ class FaceVAEMixture(nn.Module):
                 z_Recombined2[c] = torch.add(z_Recombined2[c], z_pair_random_B[c])
 
         r2 = torch.cat(z_Recombined2, 1)
-        r2 = self.decoder_fc[0](r2)
-        r2 = self.decoder[0](r2)
+        r2 = self.decoder(r2)
         rec.append(self.tanh_out(r2))
 
-        class_prediction, domain_prediction = self.classify[0]([stream_h_cat[0], stream_h_cat[2]]) # Classify the relationship based on the real faces
+        class_prediction, domain_prediction = self.classify([stream_h_cat[0], stream_h_cat[1]]) # Classify the relationship based on the real faces
 
-        return stream_outputs, stream_recons, stream_inputs, rec, mu_lists, std_lists, z_sample_lists, class_prediction, domain_prediction
+        return stream_outputs_tanh, stream_outputs, stream_inputs_tanh, rec, mu_lists, std_lists, z_sample_lists, class_prediction, domain_prediction
 
 
     def decode(self, z_sample_lists):
         # input: a list of latent z's for each cluster
         stream_h_cat = torch.cat(z_sample_lists, 1)
-        stream_h_list = self.decoder_fc[0](stream_h_cat)
-        stream_out = self.decoder[0](stream_h_list)
+        stream_out = self.decoder(stream_h_cat)
         stream_recons = stream_out
         stream_ts = self.tanh_out(stream_out)
         stream_outputs = stream_ts

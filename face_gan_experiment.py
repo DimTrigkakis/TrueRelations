@@ -38,7 +38,7 @@ class GAN_Building():
                 if my_max > 1e3 or my_min < 1e-20:
                     print("Exploding or vanishing gradient in: {}, min {:0.2f}, max {:0.2f}".format(param, my_min, my_max))
 
-    def __init__(self, save_models=True, model_choice="X", dbs=None, result_path=None, proper_size=(224,224)):
+    def __init__(self, save_models=True, model_choice="X", dbs=None, result_path=None, proper_size=(64,64)):
 
         # Visuals
         self.epoch_counting = {'train':[], 'test':[]}
@@ -236,6 +236,8 @@ class GAN_Building():
                     self.optimizer.step()
                     bar.update(batch_idx)
 
+
+            continue
             for grouper_visualizations in range(1):
                 self.epoch_plot_acc['train']['acc class'].append(correct_class*100.0/total_batch)
                 trace = dict(x=self.epoch_counting['train'], y=self.epoch_plot_acc['train']['acc class'], mode="markers+lines", type='custom', marker={'color': 'red', 'symbol': 0, 'size': "5"})
@@ -271,8 +273,6 @@ class GAN_Building():
                     sample_output, _, _ = self.GAN.GAN[0].decode(z_random_full)
                     vis['sample'].image(torch.clamp(self.dbs['train'].ut(sample_output[0].cpu().data),0,1),  opts={'caption':"Sample Randomized {}".format(i+1)})
                     vis['sample'].image(torch.clamp(torch.add(torch.mul(torch.cat(z_random_full,1)[0].unsqueeze(0).unsqueeze(0).repeat(1,24,1).cpu().data,0.1), 0.5),0,1),  opts={'caption':"Sample Randomized vector {}".format(i+1),'width':self.proper_size[0],'height':self.proper_size[1]})
-
-            continue
 
             if epoch % self.scheduler['test'] == 0:
                 epoch_test = int(math.floor(epoch/self.scheduler['test']))

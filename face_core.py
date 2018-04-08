@@ -56,9 +56,9 @@ datapath ={'train':"/scratch/Jack/datasets/True_Relations_Dataset/train_test_eva
 
 # No cropping or flipping initially
 
-bt_configuration_face={'mean':[.4669 ,.3633,.3117],'std':[0.26307311 ,0.23352264 ,0.22752409],'transform_list':[transforms.Resize((224,224))]}
-bt_configuration_body={'mean':[0.4410,0.3603,0.3198],'std':[0.2756887 ,0.25631477 ,0.25326068] ,'transform_list':[transforms.Resize((224,224))]}
-bt_configuration_whole={'mean':[0.4402,0.3934,0.3573],'std':[0.275962 ,0.26490119 ,0.26475916],'transform_list':[transforms.Resize((224,224))]}
+bt_configuration_face={'mean':[.4669 ,.3633,.3117],'std':[0.26307311 ,0.23352264 ,0.22752409],'transform_list':[transforms.Resize((64,64))]}
+bt_configuration_body={'mean':[0.4410,0.3603,0.3198],'std':[0.2756887 ,0.25631477 ,0.25326068] ,'transform_list':[transforms.Resize((64,64))]}
+bt_configuration_whole={'mean':[0.4402,0.3934,0.3573],'std':[0.275962 ,0.26490119 ,0.26475916],'transform_list':[transforms.Resize((64,64))]}
 bt = [Base_Transform(bt_configuration_face).t_transform(), Base_Transform(bt_configuration_body).t_transform(), Base_Transform(bt_configuration_whole).t_transform()]
 
 configurations['train']['transform'] = bt
@@ -138,9 +138,9 @@ def mapping_decoder(datum, t):
 
 ############# Subsets
 
-configurations['train']['subset_percent'] = 0.01 #
-configurations['val']['subset_percent'] = 0.001 #
-configurations['test']['subset_percent'] = 0.001 #
+configurations['train']['subset_percent'] = 1.0 #
+configurations['val']['subset_percent'] = 1.0 #
+configurations['test']['subset_percent'] = 1.0 #
 
 def random_subset_selection():
     for subset in ['train','val','test']:
@@ -195,11 +195,11 @@ for idx, item in enumerate(configurations['train']["data"]):
 train_sampler = torch.utils.data.sampler.WeightedRandomSampler(weight, len(weight))
 
 configurations['train']['decoder'] = mapping_decoder
-configurations['train']['sampler'] = {'bs':4,'sampler':train_sampler} # train sampler and subset are mutually exclusive
+configurations['train']['sampler'] = {'bs':256,'sampler':train_sampler} # train sampler and subset are mutually exclusive
 configurations['val']['decoder'] = mapping_decoder
-configurations['val']['sampler'] = {'bs':4,'shuffle':False}
+configurations['val']['sampler'] = {'bs':256,'shuffle':False}
 configurations['test']['decoder'] = mapping_decoder
-configurations['test']['sampler'] = {'bs':4,'shuffle':False}
+configurations['test']['sampler'] = {'bs':256,'shuffle':False}
 
 ####
 
