@@ -451,6 +451,7 @@ class FaceVAEMixture(nn.Module):
 
         return stream_outputs, stream_recons, stream_inputs, rec, mu_lists, std_lists, z_sample_lists, class_prediction, domain_prediction
 
+
     def decode(self, z_sample_lists):
         # input: a list of latent z's for each cluster
         stream_h_cat = torch.cat(z_sample_lists, 1)

@@ -13,6 +13,7 @@ class Base_Transform():
     def t_transform(self):
         return transforms.Compose([*self.configuration['transform_list'],transforms.ToTensor(), transforms.Normalize(mean=self.configuration['mean'], std=self.configuration['std'])])
 
+
     def ut_transform(self):
 
         mean, std = self.configuration['mean'], self.configuration['std']

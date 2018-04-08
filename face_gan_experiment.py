@@ -184,6 +184,7 @@ class GAN_Building():
 
                         self.batches_plot_acc['train']['acc dsc'].append(current_correct_sum * 100 / proper_total_discriminator_batch)
 
+
                         ### Plot visualizations
                         trace = dict(x=self.batch_counting['train'], y=self.batches_plot_acc['train']['acc class'], mode="markers+lines", type='custom', marker={'color': 'red', 'symbol': 0, 'size': "5"})
                         layout = dict(title="Classification Accuracy Plot (train)", xaxis={'title': 'batch idx'}, yaxis={'title': 'class accuracy'})
