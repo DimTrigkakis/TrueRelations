@@ -3,7 +3,95 @@ import torch.nn as nn
 import random
 from torch.autograd import Variable
 import math
-from resnet_models import BasicBlock, ReverseBasicBlock
+from sklearn.cluster import KMeans
+import pathlib
+from sklearn.cluster import KMeans
+import progressbar
+import torch.optim as optim
+import math
+import random
+import visdom
+import numpy as np
+import torch.nn.functional as F
+import torchvision.transforms as transforms
+import torch.utils.data as data
+import os.path as path
+import PIL
+from PIL import Image
+
+def conv3x3(in_planes, out_planes, stride=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,padding=1, bias=False)
+
+def Rconv3x3(in_planes, out_planes, stride=1):
+    """3x3 convolution with padding"""
+    return nn.ConvTranspose2d(in_planes, out_planes, kernel_size=3, stride=stride,output_padding=stride-1,padding=1, bias=False)
+
+class ReverseBasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, upsample=None):
+        super(ReverseBasicBlock, self).__init__()
+        if stride == 1:
+            self.conv1 = Rconv3x3(planes, planes, stride)
+        else:
+            self.conv1 = Rconv3x3(planes, planes, stride)
+
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = Rconv3x3(inplanes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.upsample = upsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv2(x)
+        out = self.bn2(out)
+
+        out = self.relu(out)
+
+        out = self.conv1(out)
+        out = self.bn1(out)
+
+        if self.upsample is not None:
+            residual = self.upsample(x)
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None):
+        super(BasicBlock, self).__init__()
+        self.conv1 = conv3x3(inplanes, planes, stride)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = conv3x3(planes, planes)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
 
 class ResnetFragmentDecoder(nn.Module):
 

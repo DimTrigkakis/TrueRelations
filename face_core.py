@@ -1,13 +1,3 @@
-import torch
-import torchvision.transforms as transforms
-import torch.utils.data as data
-import os.path as path
-import PIL
-from PIL import Image
-import random
-import visdom
-import numpy as np
-from recombined_gan import *
 from face_gan_experiment import *
 
 # Visdom for Visualizations
@@ -21,28 +11,18 @@ class Base_Transform():
         self.configuration = configuration
 
     def t_transform(self):
-
-        t = transforms.Compose([
-            *self.configuration['transform_list'],
-            transforms.ToTensor(), # C x H x W
-            transforms.Normalize(mean=self.configuration['mean'], std=self.configuration['std'])
-        ])
-
-        return t
+        return transforms.Compose([*self.configuration['transform_list'],transforms.ToTensor(), transforms.Normalize(mean=self.configuration['mean'], std=self.configuration['std'])])
 
     def ut_transform(self):
 
-        mean = self.configuration['mean']
-        std = self.configuration['std']
-        umean = [mean[0], mean[1], mean[2]]
-        ustd = [std[0], std[1], std[2]]
+        mean, std = self.configuration['mean'], self.configuration['std']
+        umean, ustd = [mean[0], mean[1], mean[2]], [std[0], std[1], std[2]]
+
         for i in range(3):
             ustd[i] = 1.0/ustd[i]
             umean[i] = -umean[i]*ustd[i]
 
-        t = transforms.Compose([
-            transforms.Normalize(mean=umean, std=ustd),
-        ])
+        t = transforms.Compose([transforms.Normalize(mean=umean, std=ustd)])
 
         return t
 
@@ -52,9 +32,9 @@ class DataBuilder(data.Dataset):
 
                 self.configuration = configuration
                 if "shuffle" in configuration['sampler'].keys():
-                    self.loader = torch.utils.data.DataLoader(dataset=self, batch_size=configuration['sampler']['bs'], shuffle=configuration['sampler']['shuffle'], num_workers=12)
+                    self.loader = data.DataLoader(dataset=self, batch_size=configuration['sampler']['bs'], shuffle=configuration['sampler']['shuffle'], num_workers=12)
                 else:
-                    self.loader = torch.utils.data.DataLoader(dataset=self, batch_size=configuration['sampler']['bs'], sampler=configuration['sampler']['sampler'], num_workers=12)
+                    self.loader = data.DataLoader(dataset=self, batch_size=configuration['sampler']['bs'], sampler=configuration['sampler']['sampler'], num_workers=12)
 
                 self.ut = Base_Transform(bt_configuration_face).ut_transform()
 
@@ -75,19 +55,9 @@ datapath ={'train':"/scratch/Jack/datasets/True_Relations_Dataset/train_test_eva
 
 # No cropping or flipping initially
 
-'''
-bt_configuration_face={'mean':[.4669 ,.3633,.3117],'std':[0.26307311 ,0.23352264 ,0.22752409],'transform_list':[transforms.Resize((128,128))]}
-bt_configuration_body={'mean':[0.4410,0.3603,0.3198],'std':[0.2756887 ,0.25631477 ,0.25326068] ,'transform_list':[transforms.Resize((256,128))]}
-bt_configuration_whole={'mean':[0.4402,0.3934,0.3573],'std':[0.275962 ,0.26490119 ,0.26475916],'transform_list':[transforms.Resize((256,256))]}
-'''
-
 bt_configuration_face={'mean':[.4669 ,.3633,.3117],'std':[0.26307311 ,0.23352264 ,0.22752409],'transform_list':[transforms.Resize((224,224))]}
 bt_configuration_body={'mean':[0.4410,0.3603,0.3198],'std':[0.2756887 ,0.25631477 ,0.25326068] ,'transform_list':[transforms.Resize((224,224))]}
 bt_configuration_whole={'mean':[0.4402,0.3934,0.3573],'std':[0.275962 ,0.26490119 ,0.26475916],'transform_list':[transforms.Resize((224,224))]}
-
-#bt_configuration_body={'mean':[0.4410,0.3603,0.3198],'std':[0.2756887 ,0.25631477 ,0.25326068] ,'transform_list':[transforms.Resize((256,256)), transforms.RandomCrop((224,224))]}
-#bt_configuration_whole={'mean':[0.4402,0.3934,0.3573],'std':[0.275962 ,0.26490119 ,0.26475916],'transform_list':[transforms.Resize((256,256)), transforms.RandomCrop((224,224))]}
-
 bt = [Base_Transform(bt_configuration_face).t_transform(), Base_Transform(bt_configuration_body).t_transform(), Base_Transform(bt_configuration_whole).t_transform()]
 
 configurations['train']['transform'] = bt
@@ -167,9 +137,9 @@ def mapping_decoder(datum, t):
 
 ############# Subsets
 
-configurations['train']['subset_percent'] = 1.0 #
-configurations['val']['subset_percent'] = 1.0 #
-configurations['test']['subset_percent'] = 1.0 #
+configurations['train']['subset_percent'] = 0.01 #
+configurations['val']['subset_percent'] = 0.001 #
+configurations['test']['subset_percent'] = 0.001 #
 
 def random_subset_selection():
     for subset in ['train','val','test']:
@@ -183,6 +153,7 @@ def random_subset_selection():
                     class_numbers[subset][int(label)] -= 1
             else:
                 index += 1
+
 def specific_subset_selection():
     for subset in ['train','val','test']:
         index = 0
@@ -315,17 +286,7 @@ for i, datum in enumerate(db_train.loader):
 
 # print(np.sqrt(face_var/samples), np.sqrt(body_var/samples), np.sqrt(whole_var/samples))
 '''
-######################### Visuals
-'''
-for i, datum in enumerate(db_train.loader):
-    vis.image(datum["FaceA"][0].numpy())
-    vis.image(datum["FaceB"][0].numpy())
-    vis.image(datum["BodyA"][0].numpy())
-    vis.image(datum["BodyB"][0].numpy())
-    vis.image(datum["Whole"][0].numpy())
-    break
-'''
-######################### Start True Script Here
+######################### Class balance
 '''
 for subset in ['train','val','test']:
     print(class_numbers[subset])
@@ -340,7 +301,7 @@ for subset in ['train','val','test']:
 '''
 ########## VAE multi-cluster
 
-V = GAN_Building(model_choice="GAN Zodiac", dbs={'train':db_train, 'val':db_val, 'test':db_test}, result_path="/scratch/Jack/research lab/True_Relations/")
+V = GAN_Building(model_choice="DCGAN", dbs={'train':db_train, 'val':db_val, 'test':db_test}, result_path="/scratch/Jack/research lab/True_Relations/")
 V.train()
 
 ############# BASELINES
