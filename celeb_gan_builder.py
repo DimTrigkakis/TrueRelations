@@ -190,7 +190,7 @@ class GAN_Building():
 
                     VAE_total_loss =VAE_mse+VAE_kld
 
-                    VAE_total_loss.backward()
+                    VAE_total_loss.backward(retain_graph=True)
                     self.optimizer_encoder.step()
                     
                     self.update_info("train,batch,mse loss", VAE_mse)
@@ -200,20 +200,20 @@ class GAN_Building():
 
                     # Generator phase on reconstruction and gan objective, to train decoder
 
-                    mvars_gen = [self.GAN_generator.encoder(in_datums[stream]) for stream in range(len(in_datums))]
-                    stream_reconstructions_gen = [None for stream in range(len(in_datums))]
-                    for stream in range(len(in_datums)):
-                        mvars_gen[stream][0], mvars_gen[stream][1] = torch.cat(mvars_gen[stream][0], 1), torch.cat(mvars_gen[stream][1], 1)
-                        stream_sample_gen = self.GAN_generator.sample_z(mvars_gen[stream])
-                        stream_reconstructions_gen[stream] = (self.GAN_generator.decoder(stream_sample_gen))
+                    self.optimizer_decoder.zero_grad()
+                    #mvars_gen = [self.GAN_generator.encoder(in_datums[stream]) for stream in range(len(in_datums))]
+                    #stream_reconstructions_gen = [None for stream in range(len(in_datums))]
+                    #for stream in range(len(in_datums)):
+                    #    mvars_gen[stream][0], mvars_gen[stream][1] = torch.cat(mvars_gen[stream][0], 1), torch.cat(mvars_gen[stream][1], 1)
+                    #    stream_sample_gen = self.GAN_generator.sample_z(mvars_gen[stream])
+                    #    stream_reconstructions_gen[stream] = (self.GAN_generator.decoder(stream_sample_gen))
 
-                    L_dec_mse, _ = self.vae_loss(in_datums, stream_reconstructions_gen, mvars_gen)
+                    L_dec_mse, _ = self.vae_loss(in_datums, stream_reconstructions, mvars)
                     gamma = 0.01
                     L_dec_mse = torch.mul(L_dec_mse, gamma)
 
                     # trained on Dis(Dec(Enc(x)))
-                    self.optimizer_decoder.zero_grad()
-                    discriminator_prediction_streams_gen = self.GAN_discriminator([stream_reconstructions_gen[stream] for stream in range(len(in_datums))])
+                    discriminator_prediction_streams_gen = self.GAN_discriminator([stream_reconstructions[stream] for stream in range(len(in_datums))])
                     true_label_streams_gen = [torch.ones(len(in_datums[0]), 1) for stream in range(len(in_datums))]
 
                     L_Gen_fool = self.discriminator_loss(discriminator_prediction_streams_gen, true_label_streams_gen)
@@ -221,12 +221,12 @@ class GAN_Building():
                     # trained on Dis(Dec(p(z)))
                     noise = [Variable(torch.randn((len(in_datums[0]), self.GAN_generator.z)).view(-1, self.GAN_generator.z, 1, 1)).cuda()]
 
-                    discriminator_prediction_streams = self.GAN_discriminator([self.GAN_generator.decoder(noise[stream]) for stream in range(len(in_datums))])
+                    discriminator_prediction_streams_noise = self.GAN_discriminator([self.GAN_generator.decoder(noise[stream]) for stream in range(len(in_datums))])
                     true_label_streams = [torch.ones(len(in_datums[0]), 1) for stream in range(len(in_datums))]
-                    L_Gen_noise_fool = self.discriminator_loss(discriminator_prediction_streams, true_label_streams)
+                    L_Gen_noise_fool = self.discriminator_loss(discriminator_prediction_streams_noise, true_label_streams)
 
                     L_enc_total = L_Gen_fool + L_Gen_noise_fool + L_dec_mse
-                    L_enc_total.backward()
+                    L_enc_total.backward(retain_graph=True)
 
                     self.optimizer_decoder.step()
 
@@ -234,27 +234,25 @@ class GAN_Building():
                     # Real phase for discriminator
                     self.optimizer_discriminator.zero_grad()
 
-                    discriminator_prediction_streams = self.GAN_discriminator(in_datums)
+                    discriminator_prediction_streams_real = self.GAN_discriminator(in_datums)
                     true_label_streams = [torch.ones(len(in_datums[0]), 1) for stream in range(len(in_datums))]
-
-                    L_Dsc_real = self.discriminator_loss(discriminator_prediction_streams, true_label_streams)
+                    L_Dsc_real = self.discriminator_loss(discriminator_prediction_streams_real, true_label_streams)
 
                     # Fake phase for discriminator with random VAE noise
-                    noise = [Variable(torch.randn((len(in_datums[0]), self.GAN_generator.z)).view(-1, self.GAN_generator.z, 1, 1)).cuda()]
-                    discriminator_prediction_streams = self.GAN_discriminator([self.GAN_generator.decoder(noise[stream]) for stream in range(len(in_datums))])
+                    #noise = [Variable(torch.randn((len(in_datums[0]), self.GAN_generator.z)).view(-1, self.GAN_generator.z, 1, 1)).cuda()]
+                    #discriminator_prediction_streams = self.GAN_discriminator([self.GAN_generator.decoder(noise[stream]) for stream in range(len(in_datums))])
                     fake_label_streams = [torch.zeros(len(in_datums[0]), 1) for stream in range(len(in_datums))]
-
-                    L_Dsc_fake = self.discriminator_loss(discriminator_prediction_streams, fake_label_streams)
+                    L_Dsc_fake = self.discriminator_loss(discriminator_prediction_streams_noise, fake_label_streams)
 
                     # Fake phase for discriminator with reconstructed VAE images
-                    mvars_gen = [self.GAN_generator.encoder(in_datums[stream]) for stream in range(len(in_datums))]
-                    stream_reconstructions_gen = [None for stream in range(len(in_datums))]
-                    for stream in range(len(in_datums)):
-                        mvars_gen[stream][0], mvars_gen[stream][1] = torch.cat(mvars_gen[stream][0], 1), torch.cat(mvars_gen[stream][1], 1)
-                        stream_sample_gen = self.GAN_generator.sample_z(mvars_gen[stream])
-                        stream_reconstructions_gen[stream] = (self.GAN_generator.decoder(stream_sample_gen))
+                    #mvars_gen = [self.GAN_generator.encoder(in_datums[stream]) for stream in range(len(in_datums))]
+                    #stream_reconstructions_gen = [None for stream in range(len(in_datums))]
+                    #for stream in range(len(in_datums)):
+                    #    mvars_gen[stream][0], mvars_gen[stream][1] = torch.cat(mvars_gen[stream][0], 1), torch.cat(mvars_gen[stream][1], 1)
+                    #    stream_sample_gen = self.GAN_generator.sample_z(mvars_gen[stream])
+                    #    stream_reconstructions_gen[stream] = (self.GAN_generator.decoder(stream_sample_gen))
 
-                    discriminator_prediction_streams_gen = self.GAN_discriminator([stream_reconstructions_gen[stream] for stream in range(len(in_datums))])
+                    #discriminator_prediction_streams_gen = self.GAN_discriminator([stream_reconstructions[stream] for stream in range(len(in_datums))])
                     true_label_streams_gen = [torch.zeros(len(in_datums[0]), 1) for stream in range(len(in_datums))]
                     L_Dsc_fake_rec = self.discriminator_loss(discriminator_prediction_streams_gen, true_label_streams_gen)
 
