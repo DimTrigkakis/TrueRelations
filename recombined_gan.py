@@ -19,20 +19,18 @@ import os.path as path
 import PIL
 from PIL import Image
 import torch.backends.cudnn as tbc
+import glob
 
-tbc.benchmark = True
+tbc.benchmark= True
 
-def weights_init(m):
-    classname = m.__class__.__name__
-    if classname.find('Conv') != -1:
-        m.weight.data.normal_(0.0, 0.02)
-    elif classname.find('BatchNorm') != -1:
-        m.weight.data.normal_(1.0, 0.02)
-        m.bias.data.fill_(0)
+def normal_init(m, mean, std):
+    if isinstance(m, nn.ConvTranspose2d) or isinstance(m, nn.Conv2d):
+        m.weight.data.normal_(mean, std)
+        m.bias.data.zero_()
 
 class decoder(nn.Module):
     # initializers
-    def __init__(self, image_size=64, density=64, latent_dim=100, channels=3):
+    def __init__(self, image_size=64, density=128, latent_dim=100, channels=3):
         super(decoder, self).__init__()
 
         depth = math.log2(image_size) # image size is 64
@@ -53,16 +51,18 @@ class decoder(nn.Module):
         self.decoder.add_module('ouput conv', nn.ConvTranspose2d(density, channels, 4, 2, 1, bias=False))
         self.decoder.add_module('output tanh', nn.Tanh())
 
-        self.apply(weights_init)
-
     # forward method
     def forward(self, input):
         output = self.decoder(input)
         return output
 
+    def weight_init(self, mean, std):
+        for m in self._modules:
+            normal_init(self._modules[m], mean, std)
+
 class encoder(nn.Module):
     # initializers
-    def __init__(self, image_size=64, density=64, latent_dim=99, latent_group = 33,channels=3):
+    def __init__(self, image_size=64, density=128, latent_dim=99, latent_group = 33,channels=3):
         super(encoder, self).__init__()
 
         depth = math.log2(image_size) # image size is 64
@@ -85,8 +85,6 @@ class encoder(nn.Module):
             self.encoder.add_module('encoder batchnorm {0}'.format(density * 2 ** (layer + 1)), nn.BatchNorm2d(int(density * 2 ** (layer + 1))))
             self.encoder.add_module('encoder relu {0}'.format(density * 2 ** (layer + 1)), nn.LeakyReLU(0.2, inplace=True))
 
-        self.apply(weights_init)
-
     # forward method
     def forward(self, input):
         output = self.encoder(input)
@@ -98,9 +96,13 @@ class encoder(nn.Module):
         logvar_list = [logvar[:,0+i*self.latent_group:self.latent_group+i*self.latent_group] for i in range(self.clusters)]
         return [mu_list, logvar_list]
 
+    def weight_init(self, mean, std):
+        for m in self._modules:
+            normal_init(self._modules[m], mean, std)
+
 class discriminator(nn.Module):
     # initializers
-    def __init__(self, image_size=64, density=64, latent_dim=99, channels=3):
+    def __init__(self, image_size=64, density=128, latent_dim=99, channels=3):
         super(discriminator, self).__init__()
 
         depth = math.log2(image_size) # image size is 64
@@ -118,16 +120,18 @@ class discriminator(nn.Module):
             self.discriminator.add_module('encoder relu {0}'.format(density * 2 ** (layer + 1)), nn.LeakyReLU(0.2, inplace=True))
 
 
-        self.discriminator.add_module('output-conv', nn.Conv2d(density * 2**(depth-3), 2, 4, 1, 0, bias=False))
+        self.discriminator.add_module('output-conv', nn.Conv2d(density * 2**(depth-3), 1, 4, 1, 0, bias=False))
         self.discriminator.add_module('output-sigmoid', nn.Sigmoid())
-
-        self.apply(weights_init)
 
     # forward method
     def forward(self, input):
 
         output = self.discriminator(input)
-        return output.view(-1, 2)
+        return output.view(-1, 1)
+
+    def weight_init(self, mean, std):
+        for m in self._modules:
+            normal_init(self._modules[m], mean, std)
 
 class RelationPrediction(nn.Module):
     def __init__(self, z, c, h, streams, classes=16, domains=5):
@@ -151,7 +155,7 @@ class RelationPrediction(nn.Module):
         return class_distribution, class_distribution_domain
 
 class FaceDiscriminator(nn.Module):
-    def __init__(self, complexity="Complexity A", clusters=3, streams=4, channels=3):
+    def __init__(self, complexity="Complexity A", clusters=3, streams=4, channels=3, image_size=64):
 
         super(FaceDiscriminator, self).__init__()
         self.complexity = complexity
@@ -160,31 +164,15 @@ class FaceDiscriminator(nn.Module):
         self.channels = channels
 
         if self.complexity == "Complexity A":
-            self.discriminate = discriminator()
+            self.discriminate = discriminator(image_size=image_size)
 
-        self.fake = False
+    def forward(self, discriminate_datums):
 
-    def forward(self, datums, stream_outputs, stream_inputs, stream_recombined):
-        #
-        discriminator_predictions = [None for i in range(len(datums))]
-        discriminator_labels = [torch.ones(datums[0].size()[0]).long() for i in range(len(datums))] # real targets are 1s, fake targets are 0s
+        discriminator_predictions = [None for i in range(len(discriminate_datums))]
+        for stream in range(len(discriminate_datums)):
+            discriminator_predictions[stream] = self.discriminate(discriminate_datums[stream])
 
-        discriminator_predictions_recombined = [None for i in range(len(datums)//2)]
-        discriminator_labels_recombined = [torch.ones(datums[0].size()[0]).long() for i in range(len(datums)//2)] # real targets are 1s, fake targets are 0s
-
-        if self.fake:  # Fake samples, 0 targets
-            #  Create 2 fake samples from recombination and 4 from reconstructions
-            for stream in range(self.streams):
-                discriminator_predictions[stream] = self.discriminate(stream_outputs[stream])
-                discriminator_labels[stream] = torch.mul(discriminator_labels[stream], 0)
-            for stream in range(self.streams//2):
-                discriminator_predictions_recombined[stream] = self.discriminate(stream_recombined[stream])
-                discriminator_labels_recombined[stream] = torch.mul(discriminator_labels[stream], 0)
-        else:
-            for stream in range(self.streams):
-                discriminator_predictions[stream] = self.discriminate(stream_inputs[stream])
-
-        return discriminator_predictions, discriminator_labels, discriminator_predictions_recombined, discriminator_labels_recombined
+        return discriminator_predictions
 
 class RecombinedGAN(nn.Module):
 
@@ -194,16 +182,15 @@ class RecombinedGAN(nn.Module):
         self.proper_size = proper_size
         self.channels = channels
         self.hidden = hidden
-        self.GAN = nn.ModuleList([FaceVAEMixture(complexity=self.complexity, proper_size=self.proper_size, channels=self.channels), FaceDiscriminator(complexity=self.complexity, channels=self.channels)])
+        self.GAN = nn.ModuleList([FaceVAEMixture(complexity=self.complexity, proper_size=self.proper_size, channels=self.channels), FaceDiscriminator(complexity=self.complexity, channels=self.channels, image_size=proper_size[0])])
 
     def forward(self, datums):
-        stream_outputs, stream_recons, stream_inputs, stream_recombined, mu_lists, std_lists, z_sample_lists, class_predictions, domain_predictions = self.GAN[0](datums)
-        d_pred, d_labels, d_pred_r, d_labels_r = self.GAN[1](datums, stream_outputs, stream_inputs, stream_recombined)
-        return stream_outputs, stream_recons, stream_inputs, mu_lists, std_lists, z_sample_lists, class_predictions, domain_predictions, d_pred, d_labels, d_pred_r, d_labels_r
+        assert "Use partial modules instead..." == "You are not using partial modules..."
+        return 14
 
 class FaceVAEMixture(nn.Module):
 
-    def sample_z(self,input):
+    def sample_z(self, input):
 
         mu = input[0]
         logvar = input[1]
@@ -228,10 +215,6 @@ class FaceVAEMixture(nn.Module):
         self.proper_size = proper_size
         self.log_string = None
 
-        self.sigmoid_in = nn.Sigmoid()
-        self.sigmoid_out = nn.Sigmoid()
-        self.tanh_in = nn.Tanh()
-
         if self.complexity == "Complexity A":
             self.z = 99
             assert self.z % self.clusters == 0
@@ -240,7 +223,6 @@ class FaceVAEMixture(nn.Module):
             self.decoder = decoder(image_size=self.proper_size[0], density=64, latent_dim=self.z, channels=self.channels)
             self.classify = RelationPrediction(self.z, self.clusters, self.hidden, self.streams//2, classes=16, domains=5)
 
-        self.tanh_out = nn.Tanh()
         #self.upsample = nn.Upsample(scale_factor=8)
 
     def log(self, s):
@@ -255,7 +237,7 @@ class FaceVAEMixture(nn.Module):
 
     def forward(self, datums):
 
-        stream_inputs_tanh = [self.tanh_in(stream) for stream in datums]
+        stream_inputs = [stream for stream in datums]
         stream_h_cat = [None for i in range(len(datums))]
         stream_outputs = [None for i in range(len(datums))]
         stream_outputs_tanh = [None for i in range(len(datums))]
@@ -265,8 +247,7 @@ class FaceVAEMixture(nn.Module):
         z_sample_lists = [[] for i in range(len(datums))]
 
         for stream_idx in range(len(datums)):
-            stream_tanh = stream_inputs_tanh[stream_idx]
-            mu_list, std_list = self.encoder(stream_tanh)
+            mu_list, std_list = self.encoder(stream_inputs[stream_idx])
 
             mu_lists[stream_idx] = mu_list # list of clusters containing mu vectors
             std_lists[stream_idx] = std_list
@@ -283,8 +264,6 @@ class FaceVAEMixture(nn.Module):
             stream_h_cat[stream_idx] = torch.cat(z_sample_lists[stream_idx],1)
 
             stream_outputs[stream_idx] = self.decoder(stream_h_cat[stream_idx])
-            stream_ts = self.tanh_out(stream_outputs[stream_idx])
-            stream_outputs_tanh[stream_idx]= stream_ts
 
         # Create a recombined sample for each pair in the batch (assume pair of 2 streams)
         z_pair_A = z_sample_lists[0]
@@ -304,8 +283,7 @@ class FaceVAEMixture(nn.Module):
         rec = [] # Recombined list of streams of pairs
 
         r = torch.cat(z_Recombined, 1)
-        r = self.decoder(r)
-        rec.append(self.tanh_out(r))
+        rec.append(self.decoder(r))
 
         random_cluster = random.randint(0, self.clusters)
         z_Recombined2 = [Variable(torch.zeros(self.z//self.clusters, 1, 1)).cuda() for k in range(self.clusters)]
@@ -316,12 +294,11 @@ class FaceVAEMixture(nn.Module):
                 z_Recombined2[c] = torch.add(z_Recombined2[c], z_pair_random_B[c])
 
         r2 = torch.cat(z_Recombined2, 1)
-        r2 = self.decoder(r2)
-        rec.append(self.tanh_out(r2))
+        rec.append(self.decoder(r2))
 
         class_prediction, domain_prediction = self.classify([stream_h_cat[0], stream_h_cat[1]]) # Classify the relationship based on the real faces
 
-        return stream_outputs_tanh, stream_outputs, stream_inputs_tanh, rec, mu_lists, std_lists, z_sample_lists, class_prediction, domain_prediction
+        return stream_outputs, stream_inputs, rec, mu_lists, std_lists, z_sample_lists, class_prediction, domain_prediction
 
 
     def decode(self, z_sample_lists):

@@ -8,7 +8,7 @@ for env in environments:
 
 #################### Vanilla Model Double Stream
 
-schedulers_types = {'DCGAN':{'epochs' : 30, 'start':1, 'save':1, 'test':1, 'cluster':1, 'lr': 10e-5, 'wd': 0}}
+schedulers_types = {'DCGAN':{'epochs' : 10, 'start':1, 'save':1, 'test':1, 'cluster':1, 'lr': 0.0001, 'wd': 0}}
 complexity_type = {'DCGAN': 'Complexity A'}
 
 model_choice = 'DCGAN' # Build Scheduler for training and Parameters for model architecture
@@ -56,8 +56,6 @@ class GAN_Building():
         self.dbs = dbs
         self.result_path = result_path
 
-        self.optimizer = None
-
         self.main_directory = "FaceGan Lab/"
         self.result_path = result_path
         self.scheduler = schedulers_types[self.model_choice]
@@ -68,8 +66,8 @@ class GAN_Building():
         self.directory_models = GAN_Building.use_path(self.directory + "/models/")
         self.directory_visuals = GAN_Building.use_path(self.directory + "/visuals/")
 
-        self.GAN = RecombinedGAN(complexity_type[self.model_choice], proper_size=self.proper_size).cuda()
-
+        self.GAN_generator = FaceVAEMixture(complexity=complexity_type[self.model_choice], proper_size=self.proper_size, channels=3).cuda()
+        self.GAN_discriminator = FaceDiscriminator(complexity=complexity_type[self.model_choice], channels=3, image_size=self.proper_size[0]).cuda()
 
     def visualize_train(self, in_datums, stream_inputs, stream_outputs, d_labels, d_pred, datum, class_predictions, domain_predictions, epoch):
         for s in range(len(in_datums)//2):
@@ -77,13 +75,13 @@ class GAN_Building():
             vis['rec'].image(torch.clamp(self.dbs['train'].ut(stream_outputs[s][0].cpu().data), 0, 1), opts={'caption': "Reconstructed Output (e{})".format(epoch)})
             if self.GAN.GAN[1].fake:
                 pred = "[]"
-                if d_labels[s][0] == d_pred[s][0].max(0)[1].cpu().data.numpy()[0]:
-                    pred = "[x]"
+                #if d_labels[s][0] == d_pred[s][0].max(0)[1].cpu().data.numpy()[0]:
+                #    pred = "[x]"
                 vis['class_dsc'].image(torch.clamp(self.dbs['train'].ut(stream_inputs[s][0].cpu().data), 0, 1), opts={'caption': '{}'.format(pred)})
             else:
                 pred = "[]"
-                if d_labels[s][0] == d_pred[s][0].max(0)[1].cpu().data.numpy()[0]:
-                    pred = "[x]"
+                #if d_labels[s][0] == d_pred[s][0].max(0)[1].cpu().data.numpy()[0]:
+                #    pred = "[x]"
                 vis['class_dsc'].image(torch.clamp(self.dbs['train'].ut(stream_outputs[s][0].cpu().data), 0, 1), opts={'caption': '{}'.format(pred)})
 
         for s in range(len(in_datums)):
@@ -98,7 +96,9 @@ class GAN_Building():
 
     def train(self):
 
-        self.optimizer = optim.Adam(self.GAN.parameters(), weight_decay=self.scheduler['wd'], lr= self.scheduler['lr'])
+        self.optimizer_generator = optim.Adam(self.GAN_generator.parameters(), lr=self.scheduler['lr'], betas=(0.5, 0.999))
+        self.optimizer_discriminator = optim.Adam(self.GAN_discriminator.parameters(), lr=self.scheduler['lr'], betas=(0.5, 0.999))
+
         if self.scheduler['start'] != 1:
             self.directory_models = self.directory + "/models/"
             self.GAN.load_state_dict(torch.load(self.directory_models + "GAN_model_" + str(self.scheduler['start'] - 1) + ".model"))
@@ -116,26 +116,111 @@ class GAN_Building():
                 total_batch = 0
 
             print("Training commences ----------------- epoch {}".format(epoch))
-            self.GAN.GAN[0].inference = False
-            self.GAN.train()
+            self.GAN_generator.inference = False
+            self.GAN_discriminator.train()
+            self.GAN_generator.train()
 
             the_epoch_visual = True
+
             with progressbar.ProgressBar(max_value=len(self.dbs['train'].loader)) as bar:
                 for batch_idx, datum in enumerate(self.dbs['train'].loader):
 
-                    self.GAN.GAN[1].fake = not self.GAN.GAN[1].fake
                     self.batch_counting['train'].append(batch_idx+(epoch-1)*len(self.dbs['train'].loader))
 
                     in_datums = [Variable(datum['normal']["FaceA"].cuda()), Variable(datum['normal']["FaceB"].cuda()),Variable(datum['random']["FaceA"].cuda()), Variable(datum['random']["FaceB"].cuda())]
-                    stream_outputs, stream_recons, stream_inputs, mu_lists, std_lists, z_sample_lists, class_predictions, domain_predictions, d_pred, d_labels, d_pred_r, d_labels_r = self.GAN(in_datums)
 
-                    if the_epoch_visual:
+                    # Real phase for discriminator
+                    print("The following losses were computed")
+                    for i in range(1):
+                        vis['sample'].image(torch.clamp(self.dbs['train'].ut(in_datums[i][0].cpu().data), 0, 1), opts={'caption': "Input sample",'width':128,'height':128})
+
+                    self.optimizer_discriminator.zero_grad()
+                    discriminator_prediction_streams = self.GAN_discriminator(in_datums)
+                    true_label_streams = [torch.ones(len(in_datums[0]), 1) for stream in range(len(in_datums))]
+                    L_Dsc_real = self.discriminator_loss(discriminator_prediction_streams, true_label_streams)
+                    L_Dsc_real.backward()
+
+                    # Fake phase for discriminator with random VAE noise
+                    noise = [Variable(torch.cuda.FloatTensor(len(in_datums[0]), self.GAN_generator.z, 1, 1)) for stream in range(len(in_datums))]
+                    for stream in range(len(in_datums)):
+                        noise[stream].data.resize_(len(in_datums[0]), self.GAN_generator.z, 1, 1)
+                        noise[stream].data.normal_(0,1)
+
+                    discriminator_prediction_streams = self.GAN_discriminator([self.GAN_generator.decoder(noise[stream]) for stream in range(len(in_datums))])
+                    fake_label_streams = [torch.zeros(len(in_datums[0]), 1) for stream in range(len(in_datums))]
+                    L_Dsc_fake = self.discriminator_loss(discriminator_prediction_streams, fake_label_streams)
+                    L_Dsc_fake.backward()
+                    for i in range(1):
+                        vis['sample'].image(torch.clamp(self.dbs['train'].ut(self.GAN_generator.decoder(noise[i])[0].cpu().data), 0, 1), opts={'caption': "Noise created sample",'width':128,'height':128})
+
+
+                    # Fake phase for discriminator with reconstructed VAE images
+                    mvars_gen = [self.GAN_generator.encoder(in_datums[stream]) for stream in range(len(in_datums))]
+                    stream_reconstructions_gen = [None for stream in range(len(in_datums))]
+                    for stream in range(len(in_datums)):
+                        mvars_gen[stream][0], mvars_gen[stream][1] = torch.cat(mvars_gen[stream][0], 1), torch.cat(mvars_gen[stream][1], 1)
+                        stream_sample_gen = self.GAN_generator.sample_z(mvars_gen[stream])
+                        stream_reconstructions_gen[stream] = (self.GAN_generator.decoder(stream_sample_gen))
+
+                    discriminator_prediction_streams_gen = self.GAN_discriminator([stream_reconstructions_gen[stream] for stream in range(len(in_datums))])
+                    true_label_streams_gen = [torch.zeros(len(in_datums[0]), 1) for stream in range(len(in_datums))]
+                    L_Dsc_fake_rec = self.discriminator_loss(discriminator_prediction_streams_gen, true_label_streams_gen)
+                    L_Dsc_fake_rec.backward()
+
+                    self.optimizer_discriminator.step()
+                    ######################################################
+
+                    self.optimizer_discriminator.step()
+                    print(L_Dsc_real.data.cpu().numpy()[0],L_Dsc_fake.data.cpu().numpy()[0], L_Dsc_fake_rec.data.cpu().numpy()[0])
+                    # Reconstruct phase for VAE
+                    mvars = [self.GAN_generator.encoder(in_datums[stream]) for stream in range(len(in_datums))]
+                    stream_reconstructions = [None for stream in range(len(in_datums))]
+                    for stream in range(len(in_datums)):
+                        mvars[stream][0], mvars[stream][1] = torch.cat(mvars[stream][0], 1), torch.cat(mvars[stream][1], 1)
+                        stream_sample = self.GAN_generator.sample_z(mvars[stream])
+                        stream_reconstructions[stream] = (self.GAN_generator.decoder(stream_sample))
+
+                    for i in range(1):
+                        vis['sample'].image(torch.clamp(self.dbs['train'].ut(stream_reconstructions[i][0].cpu().data), 0, 1), opts={'caption': "reconstructed sample",'width':128,'height':128})
+
+                    VAE_total_loss = sum(self.vae_loss(in_datums, stream_reconstructions, mvars))
+                    VAE_total_loss.backward()
+                    self.optimizer_generator.step()
+                    print(VAE_total_loss.data.cpu().numpy()[0])
+
+                    # Generator loss
+                    self.optimizer_generator.zero_grad()
+
+                    mvars_gen = [self.GAN_generator.encoder(in_datums[stream]) for stream in range(len(in_datums))]
+                    stream_reconstructions_gen = [None for stream in range(len(in_datums))]
+                    for stream in range(len(in_datums)):
+                        mvars_gen[stream][0], mvars_gen[stream][1] = torch.cat(mvars_gen[stream][0], 1), torch.cat(mvars_gen[stream][1], 1)
+                        stream_sample_gen = self.GAN_generator.sample_z(mvars_gen[stream])
+                        stream_reconstructions_gen[stream] = (self.GAN_generator.decoder(stream_sample_gen))
+
+                    discriminator_prediction_streams_gen = self.GAN_discriminator([stream_reconstructions_gen[stream] for stream in range(len(in_datums))])
+
+                    for i in range(1):
+                        vis['sample'].image(torch.clamp(self.dbs['train'].ut(stream_reconstructions_gen[i][0].cpu().data), 0, 1), opts={'caption': "reconstructed sample gan",'width':128,'height':128})
+                    true_label_streams_gen = [torch.ones(len(in_datums[0]), 1) for stream in range(len(in_datums))]
+                    L_Gen_fool = self.discriminator_loss(discriminator_prediction_streams_gen, true_label_streams_gen)
+                    L_Gen_fool.backward()
+                    self.optimizer_generator.step()
+                    print(L_Gen_fool.data.cpu().numpy()[0])
+
+                    continue
+
+                    # Generator phase for reconstructions
+                    stream_outputs, stream_inputs, mu_lists, std_lists, z_sample_lists, class_predictions, domain_predictions, d_pred, d_labels, d_pred_r, d_labels_r = self.GAN(in_datums)
+
+                    if the_epoch_visual and batch_idx > len(self.dbs['train'].loader)-50:
                         self.visualize_train(in_datums, stream_inputs, stream_outputs, d_labels, d_pred, datum, class_predictions, domain_predictions, epoch)
-                        if batch_idx > 2:
-                            the_epoch_visual = False
+                        the_epoch_visual = False
 
                     L_REC, L_KLD, L_class, L_domain, L_Gen, L_Dsc = self.total_loss(stream_outputs, stream_inputs, mu_lists, std_lists, class_predictions, domain_predictions, Variable(datum["normal"]["Label"].cuda()),  Variable(datum["normal"]["Domain"].cuda()), d_pred, d_labels,d_pred_r, d_labels_r)
-                    L_total = sum([L_REC, L_KLD, L_class, L_domain, L_Gen, L_Dsc])
+
+                    L_total_generator = sum([L_REC, L_KLD, L_class, L_domain, L_Gen])
+                    L_total_discriminator = L_Dsc
 
                     if type(L_Gen) == type(1):
                         L_Gen = Variable(torch.zeros(1)).cuda()
@@ -147,7 +232,6 @@ class GAN_Building():
                         self.batches_plot_loss['train']['loss mse'].append(np.double(L_REC.cpu().data.numpy()))
                         self.batches_plot_loss['train']['loss gen'].append(np.double(L_Gen.cpu().data.numpy()))
                         self.batches_plot_loss['train']['loss dsc'].append(np.double(L_Dsc.cpu().data.numpy()))
-
 
                         self.epoch_plot_loss['train']['loss class'][epoch-self.scheduler['start']] += (np.double(L_class.cpu().data.numpy()))
                         self.epoch_plot_loss['train']['loss domain'][epoch-self.scheduler['start']] += (np.double(L_domain.cpu().data.numpy()))
@@ -171,14 +255,16 @@ class GAN_Building():
                         current_correct_sum = 0
                         for stream in range(len(stream_outputs)):
                             class_targets = Variable(d_labels[stream])
-                            predictions = d_pred[stream].max(1)[1].type_as(class_targets)
-                            correct_dsc = np.double(predictions.eq(class_targets).data.numpy())
+                            predictions = d_pred[stream].type_as(class_targets)
+                            conditional_predictions = np.where(predictions.data.cpu().numpy() < 0.5, 0 , 1)
+                            correct_dsc = np.double(np.equal(conditional_predictions,class_targets.data.cpu().numpy()))
                             correct_discriminator += correct_dsc.sum().sum()
                             current_correct_sum += correct_dsc.sum().sum()
 
+
                         proper_total_discriminator_batch = in_datums[0].size()[0]
                         if self.GAN.GAN[1].fake:
-                            proper_total_discriminator_batch *= 6
+                            proper_total_discriminator_batch *= 4
                         else:
                             proper_total_discriminator_batch *= 4
 
@@ -218,7 +304,7 @@ class GAN_Building():
                         layout = dict(title="Losses Plot (train)", xaxis={'title': 'batch idx'}, yaxis={'title': 'All losses'})
                         vis['plots']._send({'data': [trace1, trace2, trace3, trace3_b, trace4, trace5], 'layout': layout, 'win': 'All losses, training'})
 
-                        K = 20
+                        K = 200
                         if len(self.batch_counting['train']) > K:
                             lenn = len(self.batch_counting['train'])-K
                             self.batch_counting['train'] = self.batch_counting['train'][lenn:]
@@ -227,16 +313,15 @@ class GAN_Building():
                             for key in self.batches_plot_acc['train'].keys():
                                 self.batches_plot_acc['train'][key] = self.batches_plot_acc['train'][key][lenn:]
 
-
-
-
-                    self.optimizer.zero_grad()
-                    L_total.backward(retain_graph=True)
+                    self.optimizer_generator.zero_grad()
+                    L_total_generator.backward(retain_graph=True)
                     #self.check_gradients()
-                    self.optimizer.step()
+                    self.optimizer_generator.step()
+                    self.optimizer_discriminator.zero_grad()
+                    L_total_discriminator.backward(retain_graph=True)
+                    #self.check_gradients()
+                    self.optimizer_discriminator.step()
                     bar.update(batch_idx)
-
-
             continue
             for grouper_visualizations in range(1):
                 self.epoch_plot_acc['train']['acc class'].append(correct_class*100.0/total_batch)
@@ -244,72 +329,80 @@ class GAN_Building():
                 layout = dict(title="Classification Accuracy Plot (train)", xaxis={'title': 'epoch idx'}, yaxis={'title': 'class accuracy'})
                 vis['plots']._send({'data': [trace], 'layout': layout, 'win': 'Class accuracy, training (epoch)'})
 
+                self.epoch_plot_acc['train']['acc domain'].append(correct_domain * 100.0 / total_batch)
+                trace = dict(x=self.epoch_counting['train'], y=self.epoch_plot_acc['train']['acc domain'], mode="markers+lines", type='custom', marker={'color': 'red', 'symbol': 0, 'size': "5"})
+                layout = dict(title="Domain Accuracy Plot (train)", xaxis={'title': 'epoch idx'}, yaxis={'title': 'domain accuracy'})
+                vis['plots']._send({'data': [trace], 'layout': layout, 'win': 'Domain accuracy, training (epoch)'})
+
                 self.epoch_plot_acc['train']['acc dsc'].append(correct_discriminator * 100/ (4*total_batch))
                 trace = dict(x=self.epoch_counting['train'], y=self.epoch_plot_acc['train']['acc dsc'], mode="markers+lines",type='custom', marker={'color': 'red', 'symbol': 0, 'size': "5"})
                 layout = dict(title="Discriminator Accuracy Plot (train)", xaxis={'title': 'epoch idx'},yaxis={'title': 'class accuracy'})
                 vis['plots']._send({'data': [trace], 'layout': layout, 'win': 'Discriminator accuracy, training (epoch)'})
 
-                trace1 = dict(x=self.epoch_counting['train'], y=self.epoch_plot_loss['train']['loss dsc'], mode="markers+lines",type='custom', marker={'color': 'red', 'symbol': 0, 'size': "5"}, name='disc')
-                trace2 = dict(x=self.epoch_counting['train'], y=self.epoch_plot_loss['train']['loss gen'], mode="markers+lines",type='custom', marker={'color': 'blue', 'symbol': 0, 'size': "5"}, name='gen')
-                trace3 = dict(x=self.epoch_counting['train'], y=self.epoch_plot_loss['train']['loss class'], mode="markers+lines",type='custom', marker={'color': 'cyan', 'symbol': 0, 'size': "5"}, name='class')
-                trace4 = dict(x=self.epoch_counting['train'], y=self.epoch_plot_loss['train']['loss mse'], mode="markers+lines",type='custom', marker={'color': 'purple', 'symbol': 0, 'size': "5"}, name='mse')
-                trace5 = dict(x=self.epoch_counting['train'], y=self.epoch_plot_loss['train']['loss kld'], mode="markers+lines",type='custom', marker={'color': 'black', 'symbol': 0, 'size': "5"}, name='kld')
+                trace1 = dict(x=self.epoch_counting['train'], y=[i/total_batch for i in self.epoch_plot_loss['train']['loss dsc']], mode="markers+lines",type='custom', marker={'color': 'red', 'symbol': 0, 'size': "5"}, name='disc')
+                trace2 = dict(x=self.epoch_counting['train'], y=[i/total_batch for i in self.epoch_plot_loss['train']['loss gen']], mode="markers+lines",type='custom', marker={'color': 'blue', 'symbol': 0, 'size': "5"}, name='gen')
+                trace3 = dict(x=self.epoch_counting['train'], y=[i/total_batch for i in self.epoch_plot_loss['train']['loss class']], mode="markers+lines",type='custom', marker={'color': 'cyan', 'symbol': 0, 'size': "5"}, name='class')
+                trace3_b = dict(x=self.epoch_counting['train'], y=[i/total_batch for i in self.epoch_plot_loss['train']['loss domain']], mode="markers+lines", type='custom', marker={'color': 'orange', 'symbol': 0, 'size': "5"}, name='domain')
+
+                trace4 = dict(x=self.epoch_counting['train'], y=[i/total_batch for i in self.epoch_plot_loss['train']['loss mse']], mode="markers+lines",type='custom', marker={'color': 'purple', 'symbol': 0, 'size': "5"}, name='mse')
+                trace5 = dict(x=self.epoch_counting['train'], y=[i/total_batch for i in self.epoch_plot_loss['train']['loss kld']], mode="markers+lines",type='custom', marker={'color': 'black', 'symbol': 0, 'size': "5"}, name='kld')
                 layout = dict(title="Losses Plot (train)", xaxis={'title': 'epoch idx'}, yaxis={'title': 'All losses'})
-                vis['plots']._send({'data': [trace1, trace2, trace3, trace4, trace5], 'layout': layout, 'win': 'All losses, training (epoch)'})
+                vis['plots']._send({'data': [trace1, trace2, trace3, trace3_b, trace4, trace5], 'layout': layout, 'win': 'All losses, training (epoch)'})
+
             for grouper_z_samples in range(1):
                 # Create samples for Z from last z vector in training
                 self.GAN.GAN[0].eval()
-                sample_output, _, _ = self.GAN.GAN[0].decode(z_sample_lists[0])
+                last_z_sample = torch.cat(z_sample_lists[0], 1)
+                sample_output = self.GAN.GAN[0].decoder(last_z_sample)
                 vis['sample'].image(torch.clamp(self.dbs['train'].ut(sample_output[0].cpu().data),0,1),  opts={'caption':"Sample Rec"})
-                vis['sample'].image(torch.clamp(torch.add(torch.mul(torch.cat(z_sample_lists[0],1)[0].unsqueeze(0).unsqueeze(0).repeat(1,24,1).cpu().data,0.1), 0.5),0,1),  opts={'caption':"Sample Rec vector",'width':self.proper_size[0],'height':self.proper_size[1]})
+                vis['sample'].image(torch.clamp(torch.add(torch.mul(last_z_sample[0].repeat(1,24,1).cpu().data,0.1), 0.5),0,1).permute(2,1,0),  opts={'caption':"Sample Rec vector",'width':self.proper_size[0],'height':self.proper_size[1]})
 
                 # Vary samples of z
                 for i in range(self.GAN.GAN[0].clusters):
                     z_random_full = []
                     for j in range(len(z_sample_lists[0])):
                         z_random_full.append(z_sample_lists[0][j].clone())
-                    randomized_z = Variable(torch.normal(torch.zeros((self.GAN.GAN[0].z)),torch.ones(((self.GAN.GAN[0].z)))), volatile=True).cuda()
+                    randomized_z = Variable(torch.normal(torch.zeros((self.GAN.GAN[0].z//self.GAN.GAN[0].clusters,1,1)),torch.ones(((self.GAN.GAN[0].z//self.GAN.GAN[0].clusters,1,1)))), volatile=True).cuda()
+
                     z_random_full[i] = torch.add(z_random_full[i], randomized_z)
-                    sample_output, _, _ = self.GAN.GAN[0].decode(z_random_full)
+                    sample_output = self.GAN.GAN[0].decoder(torch.cat(z_random_full,1))
                     vis['sample'].image(torch.clamp(self.dbs['train'].ut(sample_output[0].cpu().data),0,1),  opts={'caption':"Sample Randomized {}".format(i+1)})
-                    vis['sample'].image(torch.clamp(torch.add(torch.mul(torch.cat(z_random_full,1)[0].unsqueeze(0).unsqueeze(0).repeat(1,24,1).cpu().data,0.1), 0.5),0,1),  opts={'caption':"Sample Randomized vector {}".format(i+1),'width':self.proper_size[0],'height':self.proper_size[1]})
+                    vis['sample'].image(torch.clamp(torch.add(torch.mul(torch.cat(z_random_full,1)[0].repeat(1,24,1).cpu().data,0.1), 0.5),0,1).permute(2,1,0),  opts={'caption':"Sample Randomized vector {}".format(i+1),'width':self.proper_size[0],'height':self.proper_size[1]})
 
             if epoch % self.scheduler['test'] == 0:
                 epoch_test = int(math.floor(epoch/self.scheduler['test']))
-                self.epoch_counting['test'].append(epoch_test)
-                print("TESTING -----------------")
-                self.GAN.GAN[0].inference = True
-                self.GAN.GAN[0].eval()
-                self.GAN.GAN[1].eval()
 
-                bar = progressbar.ProgressBar()
-                with progressbar.ProgressBar(max_value=len(self.dbs['test'].loader)) as bar:
+                for grouper_info in range(1):
+                    self.epoch_counting['test'].append(epoch_test)
+                    for key in self.epoch_plot_loss['test'].keys():
+                        self.epoch_plot_loss['test'][key].append(0)
 
                     correct_class = 0
                     correct_domain = 0
                     correct_discriminator = 0
                     total_batch = 0
 
-                    self.epoch_plot_loss['test']['loss class'].append(0)
-                    self.epoch_plot_loss['test']['loss domain'].append(0)
-                    self.epoch_plot_loss['test']['loss kld'].append(0)
-                    self.epoch_plot_loss['test']['loss mse'].append(0)
-                    self.epoch_plot_loss['test']['loss gen'].append(0)
-                    self.epoch_plot_loss['test']['loss dsc'].append(0)
+                print("TESTING -----------------")
+                self.GAN.GAN[0].inference = True
+                self.GAN.eval()
+
+                bar = progressbar.ProgressBar()
+                with progressbar.ProgressBar(max_value=len(self.dbs['val'].loader)) as bar:
+
 
                     the_epoch_visual = True
-                    for i, datum in enumerate(self.dbs['test'].loader):
-                        self.GAN.GAN[1].fake = not self.GAN.GAN[1].fake
+                    for i, datum in enumerate(self.dbs['val'].loader):
 
                         in_datums = [Variable(datum['normal']["FaceA"].cuda()), Variable(datum['normal']["FaceB"].cuda()), Variable(datum['random']["FaceA"].cuda()), Variable(datum['random']["FaceB"].cuda())]
 
-                        stream_outputs, stream_recons, stream_inputs, mu_lists, std_lists, z_sample_lists, class_predictions, domain_predictions, d_pred, d_labels, d_pred_r, d_labels_r = self.GAN(in_datums)
+                        stream_outputs, stream_inputs, mu_lists, std_lists, z_sample_lists, class_predictions, domain_predictions, d_pred, d_labels, d_pred_r, d_labels_r = self.GAN(in_datums)
 
                         if the_epoch_visual:
                             for s in range(len(in_datums)):
                                 vis['rec'].image(torch.clamp(self.dbs['test'].ut(stream_inputs[s][0].cpu().data),0,1), opts={'caption':"Test Original"})
                                 vis['rec'].image(torch.clamp(self.dbs['test'].ut(stream_outputs[s][0].cpu().data),0,1),  opts={'caption':"Test Reconstruction (overfitting litmus test)"})
                                 the_epoch_visual = False
+
                         L_REC, L_KLD, L_class, L_domain, L_Gen, L_Dsc = self.total_loss(stream_outputs, stream_inputs,mu_lists, std_lists, class_predictions, domain_predictions,Variable(datum["normal"]["Label"].cuda(), volatile=True) ,Variable(datum["normal"]["Domain"].cuda(), volatile=True),d_pred, d_labels, d_pred_r, d_labels_r)
 
                         if type(L_Gen) == type(1):
@@ -336,7 +429,9 @@ class GAN_Building():
 
                         for stream in range(len(stream_outputs)):
                             class_targets = Variable(d_labels[stream])
-                            predictions = d_pred[stream].max(1)[1].type_as(class_targets)
+                            predictions = d_pred[stream].type_as(class_targets)
+                            conditional_predictions = np.where(predictions.data.cpu().numpy() < 0.5, 0 , 1)
+                            correct_dsc = np.double(np.equal(conditional_predictions,class_targets.data.cpu().numpy()))
                             correct_dsc = np.double(predictions.eq(class_targets).data.numpy())
                             correct_discriminator += correct_dsc.sum()
 
@@ -353,23 +448,26 @@ class GAN_Building():
                     layout = dict(title="Domain Accuracy Plot (test)", xaxis={'title': 'epoch idx'},yaxis={'title': 'domain accuracy'})
                     vis['plots']._send({'data': [trace], 'layout': layout, 'win': 'Domain accuracy, testing (epoch)'})
 
-                    self.epoch_plot_acc['test']['acc dsc'].append(correct_discriminator * 100 / (2 * total_batch))
+                    self.epoch_plot_acc['test']['acc dsc'].append(correct_discriminator * 100 / (4* total_batch))
                     trace = dict(x=self.epoch_counting['test'], y=self.epoch_plot_acc['test']['acc dsc'], mode="markers+lines",type='custom', marker={'color': 'red', 'symbol': 0, 'size': "5"})
                     layout = dict(title="Discriminator Accuracy Plot (test)", xaxis={'title': 'epoch idx'},yaxis={'title': 'class accuracy'})
                     vis['plots']._send({'data': [trace], 'layout': layout, 'win': 'Discriminator accuracy, testing (epoch)'})
 
-                    trace1 = dict(x=self.epoch_counting['test'], y=self.epoch_plot_loss['test']['loss dsc'], mode="markers+lines",type='custom', marker={'color': 'red', 'symbol': 0, 'size': "5"}, name='disc')
-                    trace2 = dict(x=self.epoch_counting['test'], y=self.epoch_plot_loss['test']['loss gen'], mode="markers+lines", type='custom', marker={'color': 'blue', 'symbol': 0, 'size': "5"}, name='gen')
-                    trace3 = dict(x=self.epoch_counting['test'], y=self.epoch_plot_loss['test']['loss class'], mode="markers+lines", type='custom', marker={'color': 'cyan', 'symbol': 0, 'size': "5"}, name='class')
-                    trace3b = dict(x=self.epoch_counting['test'], y=self.epoch_plot_loss['test']['loss domain'], mode="markers+lines", type='custom', marker={'color': 'orange', 'symbol': 0, 'size': "5"}, name='domain')
-                    trace4 = dict(x=self.epoch_counting['test'], y=self.epoch_plot_loss['test']['loss mse'], mode="markers+lines",type='custom', marker={'color': 'purple', 'symbol': 0, 'size': "5"}, name='mse')
-                    trace5 = dict(x=self.epoch_counting['test'], y=self.epoch_plot_loss['test']['loss kld'], mode="markers+lines",type='custom', marker={'color': 'black', 'symbol': 0, 'size': "5"}, name='kld')
+                    trace1 = dict(x=self.epoch_counting['test'], y=[i/total_batch for i in self.epoch_plot_loss['test']['loss dsc']], mode="markers+lines",type='custom', marker={'color': 'red', 'symbol': 0, 'size': "5"}, name='disc')
+                    trace2 = dict(x=self.epoch_counting['test'], y=[i/total_batch for i in self.epoch_plot_loss['test']['loss gen']], mode="markers+lines", type='custom', marker={'color': 'blue', 'symbol': 0, 'size': "5"}, name='gen')
+                    trace3 = dict(x=self.epoch_counting['test'], y=[i/total_batch for i in self.epoch_plot_loss['test']['loss class']], mode="markers+lines", type='custom', marker={'color': 'cyan', 'symbol': 0, 'size': "5"}, name='class')
+                    trace3b = dict(x=self.epoch_counting['test'], y=[i/total_batch for i in self.epoch_plot_loss['test']['loss domain']], mode="markers+lines", type='custom', marker={'color': 'orange', 'symbol': 0, 'size': "5"}, name='domain')
+                    trace4 = dict(x=self.epoch_counting['test'], y=[i/total_batch for i in self.epoch_plot_loss['test']['loss mse']], mode="markers+lines",type='custom', marker={'color': 'purple', 'symbol': 0, 'size': "5"}, name='mse')
+                    trace5 = dict(x=self.epoch_counting['test'], y=[i/total_batch for i in self.epoch_plot_loss['test']['loss kld']], mode="markers+lines",type='custom', marker={'color': 'black', 'symbol': 0, 'size': "5"}, name='kld')
                     layout = dict(title="Losses Plot (test)", xaxis={'title': 'epoch idx'}, yaxis={'title': 'All losses'})
                     vis['plots']._send({'data': [trace1, trace2, trace3, trace3b, trace4, trace5], 'layout': layout,'win': 'All losses, testing (epoch)'})
+
+
             if epoch % self.scheduler['save'] == 0 and epoch != self.scheduler['start']:
                 print("Saving model for epoch:{}".format(epoch))
                 if self.save_models:
                     self.save_model(epoch=epoch)
+
             if epoch % self.scheduler['cluster'] == 0:
                 print("Clustering a batch of train and test samples")
 
@@ -378,7 +476,7 @@ class GAN_Building():
                     self.GAN.GAN[0].inference = True
                     self.GAN.GAN[0].eval()
                     in_datums = [Variable(datum['normal']["FaceA"].cuda()), Variable(datum['normal']["FaceB"].cuda()), Variable(datum['random']["FaceA"].cuda()), Variable(datum['random']["FaceB"].cuda())]
-                    stream_outputs, stream_recons, stream_inputs, mu_lists, std_lists, z_sample_lists, class_predictions, domain_predictions, d_pred, d_labels, d_pred_r, d_labels_r = self.GAN(in_datums)
+                    stream_outputs, stream_inputs, mu_lists, std_lists, z_sample_lists, class_predictions, domain_predictions, d_pred, d_labels, d_pred_r, d_labels_r = self.GAN(in_datums)
 
                     n_clusters = 2
                     for j in range(self.GAN.GAN[0].clusters):
@@ -386,8 +484,8 @@ class GAN_Building():
                         cluster_list_z = []
                         cluster_list_orig = []
                         for i in range(stream_inputs[0].size()[0]):
-                            cluster_list_z.append(z_sample_lists[0][j][i].cpu().data.numpy())
-                            cluster_list_orig.append(stream_inputs[0][i].cpu().data)
+                            cluster_list_z.append(z_sample_lists[0][j][i].squeeze().squeeze().cpu().data.numpy())
+                            cluster_list_orig.append(stream_inputs[0][i].squeeze().squeeze().cpu().data)
 
                         kmeans = KMeans(n_clusters=n_clusters, random_state=0).fit(cluster_list_z)
                         for clusters_kmeans in range(n_clusters):
@@ -397,26 +495,54 @@ class GAN_Building():
 
                     break
 
+    def vae_loss(self, in_datums, stream_reconstructions, mvars):
+
+        L_KLD, L_KLD_scale = 0, 1
+        L_MSE, L_MSE_scale = 0, 0
+
+        MSE_criterion = nn.MSELoss().cuda()
+
+        for stream in range(len(in_datums)):
+            KLD_element = mvars[stream][0].pow(2).add_(mvars[stream][1].exp()).mul_(-1).add_(1).add_(mvars[stream][1])
+            L_KLD += torch.sum(KLD_element).mul_(-0.5) / (self.proper_size[0]*self.proper_size[1]*in_datums[0].size()[0])
+            L_MSE += MSE_criterion(stream_reconstructions[stream], in_datums[stream])
+
+        L_MSE = torch.mul(L_MSE, L_MSE_scale)
+        L_KLD = torch.mul(L_KLD, L_KLD_scale)
+
+        return L_MSE, L_KLD
+
+    def discriminator_loss(self, discriminator_prediction_streams, label_streams):
+
+        L_Dsc, L_Dsc_scale = 0, 1
+        sigmoid_criterion = nn.BCELoss().cuda()
+        for stream in range(len(label_streams)):
+            L_Dsc += sigmoid_criterion(discriminator_prediction_streams[stream], Variable(label_streams[stream].cuda()))
+        print(discriminator_prediction_streams[0][0:1].cpu().data.numpy(), label_streams[0][0:1].cpu().numpy())
+        L_Dsc = torch.mul(L_Dsc, L_Dsc_scale)
+        return L_Dsc
+
     def total_loss(self, recon_x, x, mu, logvar, class_pred, domain_pred, target, target_domain, d_pred, d_labels, d_pred_r, d_labels_r):
 
         streams = len(recon_x)
         proper_streams = streams//2
-        L_REC, L_REC_scale = 0, 1
-        L_KLD, L_KLD_scale = 0, 1
-        L_class, L_class_scale = 0, 1
-        L_domain, L_domain_scale = 0, 1
+        L_class, L_class_scale = 0, 0
+        L_domain, L_domain_scale = 0, 0
         L_Gen, L_Gen_scale = 0, 1
         L_Dsc, L_Dsc_scale = 0, 1
+        L_recombined_flag = False
 
         batch_size = recon_x[0].size()[0]
         pss = self.proper_size[0] * self.proper_size[1] # proper size squared
+
+        MSE_Loss = nn.MSELoss()
 
         for stream_idx in range(streams):
             stream_in = x[stream_idx]
             stream_out = recon_x[stream_idx]
             mu_cat = torch.cat(mu[stream_idx],dim=1)
             logvar_cat = torch.cat(logvar[stream_idx],dim=1)
-            L_REC += F.mse_loss(stream_out.view(-1, 1 * pss),stream_in.view(-1, 1 * pss))
+            L_REC += MSE_Loss(stream_out.view(-1, 1 * pss),stream_in.view(-1, 1 * pss))
             try:
                 L_KLD += -0.5 * torch.sum(1 + logvar_cat - mu_cat.pow(2) - logvar_cat.exp())
             except:
@@ -433,18 +559,17 @@ class GAN_Building():
             # real targets are 1s, fake targets are 0s / from code for discriminator
             # We want the generator to get a small loss only if the predictions match real targets (1s)
             # since that means that we succeeded in fooling the discriminator (it predicted real labels from our reconstructions)
-            discriminator_labels = Variable(torch.ones(batch_size).long()).cuda()
+            real_labels = Variable(torch.ones(batch_size,1).float()).cuda()
             if self.GAN.GAN[1].fake:
-                L_Gen += criterion(d_pred[stream], discriminator_labels)
+                L_Gen += sigmoid_criterion(d_pred[stream], real_labels)
 
-            L_Dsc += criterion(d_pred[stream], Variable(d_labels[stream].cuda()))
-
+            L_Dsc += sigmoid_criterion(d_pred[stream], Variable(d_labels[stream].cuda()))
         # Add a loss for the recombined samples only during fake phases
         for stream in range(proper_streams):
-            if self.GAN.GAN[1].fake:
-                discriminator_labels = [Variable(torch.ones(batch_size).long()).cuda() for i in range(proper_streams)]
-                L_Gen += criterion(d_pred_r[stream], discriminator_labels[stream])
-                L_Dsc += criterion(d_pred_r[stream], Variable(d_labels_r[stream].cuda()))
+            if self.GAN.GAN[1].fake and L_recombined_flag:
+                real_labels = Variable(torch.ones(batch_size, 1).float()).cuda()
+                L_Gen += sigmoid_criterion(d_pred_r[stream], real_labels)
+                L_Dsc += sigmoid_criterion(d_pred_r[stream], Variable(d_labels_r[stream].cuda()))
 
         L_REC*= L_REC_scale
         L_KLD*= L_KLD_scale
@@ -455,3 +580,4 @@ class GAN_Building():
         return L_REC, L_KLD, L_class, L_domain, L_Gen, L_Dsc
 
 ########################
+
