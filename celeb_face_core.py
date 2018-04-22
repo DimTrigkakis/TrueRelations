@@ -108,9 +108,6 @@ def specific_subset_selection():
         for i in range(count_max):
             if i % int(1.0/configurations[subset]['subset_percent']) != 0:
                 datum = configurations[subset]['data'].pop(index)
-                if subset == "train":
-                    label = datum["relationship"]
-                    class_numbers[subset][int(label)] -= 1
             else:
                 index += 1
 

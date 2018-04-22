@@ -30,7 +30,7 @@ def normal_init(m, mean, std):
 
 class decoder(nn.Module):
     # initializers
-    def __init__(self, image_size=64, density=128, latent_dim=100, channels=3):
+    def __init__(self, image_size=64, density=32, latent_dim=100, channels=3):
         super(decoder, self).__init__()
 
         depth = math.log2(image_size) # image size is 64
@@ -62,7 +62,7 @@ class decoder(nn.Module):
 
 class encoder(nn.Module):
     # initializers
-    def __init__(self, image_size=64, density=128, latent_dim=99, latent_group = 33,channels=3):
+    def __init__(self, image_size=64, density=64, latent_dim=99, latent_group = 33,channels=3):
         super(encoder, self).__init__()
 
         depth = math.log2(image_size) # image size is 64
@@ -102,7 +102,7 @@ class encoder(nn.Module):
 
 class discriminator(nn.Module):
     # initializers
-    def __init__(self, image_size=64, density=128, latent_dim=99, channels=3):
+    def __init__(self, image_size=64, density=64, latent_dim=99, channels=3):
         super(discriminator, self).__init__()
 
         depth = math.log2(image_size) # image size is 64
